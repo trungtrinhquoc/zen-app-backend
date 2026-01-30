@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     
     # OpenAI
-    OPENAI_API_KEY: str
-    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENROUTER_API_KEY: str
+    OPENROUTER_MODEL: str = "openai/gpt-4o-mini"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     
     # Groq
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     
     model_config = SettingsConfigDict(
         env_file=".env",
-        case_sensitive=True,
+        case_sensitive=False,
         extra="ignore"
     )
 

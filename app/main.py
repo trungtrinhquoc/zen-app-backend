@@ -14,11 +14,6 @@ from app.database import verifyDatabaseConnections, closeConnections
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Application lifespan events
-    
-    Chạy khi app START và SHUTDOWN
-    """
     # ========== STARTUP ==========
     logger.info("=" * 70)
     logger.info(f"🚀 {settings.PROJECT_NAME} v{settings.VERSION}")
@@ -51,7 +46,7 @@ async def lifespan(app: FastAPI):
     # logger.info(f"📚 Docs: http://localhost:8000/docs")
     # logger.info("=" * 70)
     
-    yield  # Application is running
+    yield  
     
     # ========== SHUTDOWN ==========
     logger.info("=" * 70)

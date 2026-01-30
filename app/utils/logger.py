@@ -14,3 +14,4 @@ logging.basicConfig(
 
 logger = logging.getLogger("zen-app")
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logger.propagate = False
