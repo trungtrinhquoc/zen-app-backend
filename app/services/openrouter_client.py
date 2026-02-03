@@ -34,77 +34,47 @@ class OpenRouterService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        maxTokens: Optional[int] = None
-    ) -> Dict[str, Any]:
+        maxTokens: int = 1000
+    ) -> Dict:
         """
-        Gọi AI chat completion
-        
-        Args:
-            messages: [
-                {"role": "system", "content": "You are..."},
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi there!"}
-            ]
-            temperature: 0.0-2.0
-                - 0.0-0.3: Deterministic, factual
-                - 0.7-0.9: Balanced (best cho chat)
-                - 1.5-2.0: Creative, varied
-            maxTokens: Max length của response
-        
-        Returns:
-            {
-                "content": "AI response text",
-                "promptTokens": 100,
-                "completionTokens": 50,
-                "totalTokens": 150,
-                "model": "openai/gpt-4o-mini",
-                "responseTimeMs": 1234
-            }
+        Call OpenRouter API via OpenAI-compatible SDK
         """
-        startTime = time.time()
-        self.requestCount += 1
-        
         try:
-            logger.info(
-                f"🤖 OpenRouter call #{self.requestCount}: "
-                f"{len(messages)} messages, model={self.model}"
-            )
-            
-            # Call API
+            start_time = time.time()
+            self.requestCount += 1
+
+            logger.info("🤖 OpenRouter API call starting...")
+            logger.info(f"   Messages: {len(messages)}, Model: {self.model}, Max tokens: {maxTokens}")
+
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=maxTokens or 1000,
-                extra_headers={
-                    "HTTP-Referer": "https://zen-app.com",
-                    "X-Title": "Zen APP"
-                }
+                max_tokens=maxTokens,
             )
-            
-            # Calculate response time
-            responseTimeMs = int((time.time() - startTime) * 1000)
-            
-            # Parse result
-            result = {
-                "content": response.choices[0].message.content,
-                "promptTokens": response.usage.prompt_tokens if response.usage else 0,
-                "completionTokens": response.usage.completion_tokens if response.usage else 0,
-                "totalTokens": response.usage.total_tokens if response.usage else 0,
-                "model": response.model,
-                "responseTimeMs": responseTimeMs
+
+            end_time = time.time()
+            response_time = int((end_time - start_time) * 1000)
+
+            content = response.choices[0].message.content
+            promptTokens = response.usage.prompt_tokens
+            completionTokens = response.usage.completion_tokens
+
+            logger.info("✅ OpenRouter API response received")
+            logger.info(f"   Time: {response_time}ms")
+            logger.info(f"   Tokens: {completionTokens} completion, {promptTokens} prompt")
+
+            return {
+                "content": content,
+                "model": self.model,
+                "promptTokens": promptTokens,
+                "completionTokens": completionTokens,
+                "responseTimeMs": response_time
             }
-            
-            logger.info(
-                f"✅ Response: {result['totalTokens']} tokens, "
-                f"{responseTimeMs}ms"
-            )
-            
-            return result
-            
+
         except Exception as e:
-            logger.error(f"❌ OpenRouter error: {e}")
-            raise OpenAIException(f"OpenRouter failed: {str(e)}")
+            logger.error(f"❌ OpenRouter error: {str(e)}")
+            raise OpenAIException(f"OpenRouter request failed: {str(e)}")
 
 
 # Singleton instance

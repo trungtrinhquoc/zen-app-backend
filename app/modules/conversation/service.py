@@ -42,9 +42,6 @@ class ConversationService:
     def __init__(self, db: AsyncSession):
         """
         Initialize service
-        
-        Args:
-            db: SQLAlchemy async session (injected từ FastAPI)
         """
         self.db = db
     
@@ -349,69 +346,92 @@ class ConversationService:
         
         return result["content"], metadata
     
-    
     async def chat(self, userId: UUID, request: ChatRequest) -> ChatResponse:
         """
         🎯 MAIN CHAT FUNCTION - Core logic của Module 1
-        
-        Args:
-            userId: User ID (từ auth token)
-            request: ChatRequest schema
-        
-        Returns:
-            ChatResponse với full data
-        
-        FLOW HOÀN CHỈNH:
-        
-        1. ✅ Verify/Create user
-        2. 📂 Get/Create conversation
-        3. 📚 Load context (20 messages gần nhất)
-        4. 🎭 Analyze emotion từ user message
-        5. 💬 Save user message (với emotion data)
-        6. 📊 Update emotion_progression
-        7. 🤖 Generate AI response (tone adjusted)
-        8. 💡 Suggest activity (nếu cần)
-        9. 💾 Save AI message
-        10. ✅ Commit transaction
-        11. 📤 Return response
-        
-        Giải thích từng bước:
-        - Step 1-2: Setup conversation
-        - Step 3: Load context cho AI
-        - Step 4: Detect emotion để adjust tone
-        - Step 5: Save user message
-        - Step 6: Track emotion over time
-        - Step 7: Generate empathetic response
-        - Step 8: Suggest activity nếu user cần
-        - Step 9-10: Save và commit
-        - Step 11: Return data cho frontend
+        With detailed timing logs
+        🎯 MAIN CHAT FUNCTION - Core logic của Module 1
+            
+            Args:
+                userId: User ID (từ auth token)
+                request: ChatRequest schema
+            
+            Returns:
+                ChatResponse với full data
+            
+            FLOW HOÀN CHỈNH:
+            
+            1. ✅ Verify/Create user
+            2. 📂 Get/Create conversation
+            3. 📚 Load context (20 messages gần nhất)
+            4. 🎭 Analyze emotion từ user message
+            5. 💬 Save user message (với emotion data)
+            6. 📊 Update emotion_progression
+            7. 🤖 Generate AI response (tone adjusted)
+            8. 💡 Suggest activity (nếu cần)
+            9. 💾 Save AI message
+            10. ✅ Commit transaction
+            11. 📤 Return response
+            
+            Giải thích từng bước:
+            - Step 1-2: Setup conversation
+            - Step 3: Load context cho AI
+            - Step 4: Detect emotion để adjust tone
+            - Step 5: Save user message
+            - Step 6: Track emotion over time
+            - Step 7: Generate empathetic response
+            - Step 8: Suggest activity nếu user cần
+            - Step 9-10: Save và commit
+            - Step 11: Return data cho frontend
         """
+        import time
         
-        # 1. Verify user
+        overall_start = time.time()
+        
+        logger.info("=" * 70)
+        logger.info(f"🚀 CHAT REQUEST START")
+        logger.info(f"   User: {userId}")
+        logger.info(f"   Message: {request.message[:50]}...")
+        logger.info("=" * 70)
+        
+        # 1. ✅ Verify/Create user
+        step_start = time.time()
         user = await self.getOrCreateUser(userId)
+        step_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 1 (Get user): {step_time:.0f}ms")
         
-        # 2. Get/Create conversation
+        # 2. 📂 Get/Create conversation
+        step_start = time.time()
         conversation = await self.getOrCreateConversation(userId, request.conversation_id)
+        step_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 2 (Get/Create conversation): {step_time:.0f}ms")
         
-        # 3. Load context
+        # 3. 📚 Load context (20 messages gần nhất)
+        step_start = time.time()
         contextMessages = []
         if request.include_context:
             contextMessages = await self.getConversationContext(conversation.id, 20)
-        
         contextUsed = len(contextMessages)
+        step_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 3 (Load context): {step_time:.0f}ms (messages: {contextUsed})")
         
         # 4. 🎭 ANALYZE EMOTION
+        step_start = time.time()
         emotionData = await analyzeEmotion(request.message)
+        emotion_time = (time.time() - step_start) * 1000
+        
         emotionState = emotionData.get("emotion_state", "neutral")
         energyLevel = emotionData.get("energy_level", 5)
         
+        logger.info(f"⏱️  Step 4 (Emotion analysis): {emotion_time:.0f}ms")
         logger.info(
-            f"💭 Chat: user={user.display_name or userId}, "
-            f"conv={conversation.id}, context={contextUsed}, "
-            f"emotion={emotionState}, energy={energyLevel}"
+            f"💭 Emotion detected: {emotionState}, "
+            f"energy={energyLevel}, "
+            f"urgency={emotionData.get('urgency_level', 'low')}"
         )
         
-        # 5. Save user message (với emotion)
+        # 5. 💬 Save user message (với emotion data)
+        step_start = time.time()
         seqNum = await self.getNextSequenceNumber(conversation.id)
         userMessage = await self.saveMessage(
             conversationId=conversation.id,
@@ -421,15 +441,21 @@ class ConversationService:
             sequenceNumber=seqNum,
             emotionData=emotionData
         )
+        step_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 5 (Save user message): {step_time:.0f}ms")
         
-        # 6. Update emotion progression
+        # 6. 📊 Update emotion progression
+        step_start = time.time()
         await self.updateEmotionProgression(
             conversation.id,
             emotionState,
             energyLevel
         )
+        step_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 6 (Update emotion progression): {step_time:.0f}ms")
         
-        # 7. Generate AI response
+        # 7. 🤖 Generate AI response (tone adjusted)
+        step_start = time.time()
         userContext = {"language": user.language}
         aiContent, metadata = await self.generateAIResponse(
             userMessage=request.message,
@@ -437,19 +463,25 @@ class ConversationService:
             userContext=userContext,
             emotionState=emotionState
         )
+        ai_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 7 (AI response generation): {ai_time:.0f}ms")
+        logger.info(f"   Model: {metadata['model_used']}, Tokens: {metadata['completion_tokens']}")
         
-        # 8. 💡 SUGGEST ACTIVITY
+        # 8. 💡 SUGGEST ACTIVITY (nếu cần)
+        step_start = time.time()
         suggestion = None
         if shouldSuggestActivity(emotionData, request.message):
             activity = getSuggestedActivity(emotionData)
             if activity:
                 suggestion = activity
-                # Append suggestion vào AI response
                 suggestionMsg = generateSuggestionMessage(activity)
                 aiContent += f"\n\n{suggestionMsg}"
-                logger.info(f"💡 Suggested: {activity['activity_type']}")
+                logger.info(f"💡 Suggested activity: {activity['activity_type']}")
+        step_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 8 (Suggestion check): {step_time:.0f}ms")
         
-        # 9. Save AI message
+        # 9. 💾 Save assistant message
+        step_start = time.time()
         assistantMessage = await self.saveMessage(
             conversationId=conversation.id,
             userId=userId,
@@ -458,13 +490,29 @@ class ConversationService:
             sequenceNumber=seqNum + 1,
             metadata=metadata
         )
+        step_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 9 (Save assistant message): {step_time:.0f}ms")
         
-        # 10. Commit transaction
+        # 10. ✅ Commit transaction
+        step_start = time.time()
         await self.db.commit()
+        step_time = (time.time() - step_start) * 1000
+        logger.info(f"⏱️  Step 10 (Database commit): {step_time:.0f}ms")
         
-        logger.info(f"✅ Chat complete: {conversation.id}")
+        # SUMMARY
+        total_time = (time.time() - overall_start) * 1000
+        other_time = total_time - emotion_time - ai_time
         
-        # 11. Return response
+        logger.info("=" * 70)
+        logger.info(f"✅ CHAT REQUEST COMPLETE")
+        logger.info(f"⏱️  TOTAL TIME: {total_time:.0f}ms ({total_time/1000:.2f}s)")
+        logger.info(f"📊 TIME BREAKDOWN:")
+        logger.info(f"   - Emotion Analysis:  {emotion_time:>6.0f}ms ({emotion_time/total_time*100:>5.1f}%)")
+        logger.info(f"   - AI Response:       {ai_time:>6.0f}ms ({ai_time/total_time*100:>5.1f}%)")
+        logger.info(f"   - Other (DB/Logic):  {other_time:>6.0f}ms ({other_time/total_time*100:>5.1f}%)")
+        logger.info("=" * 70)
+        
+        # 11. 📤 Return response
         return ChatResponse(
             conversation_id=conversation.id,
             user_message=MessageResponse.model_validate(userMessage),
