@@ -6,12 +6,28 @@ import re
 from typing import Optional, Tuple
 
 
+# ============================================================
+# FAST PATH PATTERNS (Skip AI for common messages)
+# ============================================================
+
 GREETING_PATTERNS = [
     # Vietnamese
-    r'\b(xin chào|chào|hello|hi|hey)\b',
-    r'\b(buổi sáng|buổi chiều|buổi tối)\b',
+    r'\b(xin chào|chào|hello|hi|hey|hii|hiii)\b',
+    r'\b(buổi sáng|buổi chiều|buổi tối|chào buổi)\b',
     # English
     r'\b(good morning|good afternoon|good evening)\b',
+]
+
+THANKS_PATTERNS = [
+    r'\b(cảm ơn|cám ơn|thanks|thank you|thank|thks|tks)\b',
+]
+
+BYE_PATTERNS = [
+    r'\b(tạm biệt|bye|goodbye|see you|hẹn gặp lại)\b',
+]
+
+YES_NO_PATTERNS = [
+    r'^(có|không|ok|okay|oke|yes|no|yep|nope|yeah|nah)$',
 ]
 
 GREETING_RESPONSES = [
@@ -20,37 +36,69 @@ GREETING_RESPONSES = [
     "Hello! Rất vui được gặp bạn. Hãy thoải mái chia sẻ bất cứ điều gì bạn muốn nhé. ✨",
 ]
 
+THANKS_RESPONSES = [
+    "Không có gì đâu bạn! Mình luôn ở đây khi bạn cần. 💙",
+    "Rất vui được giúp bạn! Bạn cảm thấy thế nào rồi? 🌸",
+    "Bạn không cần cảm ơn đâu. Mình luôn sẵn sàng lắng nghe bạn nhé. ✨",
+]
 
-def isSimpleGreeting(message: str) -> bool:
+BYE_RESPONSES = [
+    "Tạm biệt bạn! Hãy chăm sóc bản thân nhé. Mình luôn ở đây khi bạn cần. 💙",
+    "Hẹn gặp lại bạn! Chúc bạn một ngày tốt lành. 🌸",
+    "Bye bye! Nhớ nghỉ ngơi đầy đủ nhé. See you soon! ✨",
+]
+
+YES_NO_RESPONSES = [
+    "Mình hiểu rồi. Bạn có muốn chia sẻ thêm gì không? 💙",
+    "Okay! Bạn cảm thấy thế nào về điều đó? 🌸",
+    "Được rồi. Mình đang lắng nghe bạn đây. ✨",
+]
+
+
+def isSimplePattern(message: str) -> bool:
     """
-    Check if message is a simple greeting
+    Check if message matches any simple pattern
     
     Args:
         message: User message
     
     Returns:
-        True if simple greeting
+        True if matches simple pattern
     """
     message_lower = message.lower().strip()
     
-    # Short message check
+    # Short message check (max 30 chars for fast path)
     if len(message_lower) > 30:
         return False
     
-    # Pattern matching
-    for pattern in GREETING_PATTERNS:
-        if re.search(pattern, message_lower, re.IGNORECASE):
-            # Ensure it's ONLY greeting (no other content)
-            words = message_lower.split()
-            if len(words) <= 3:
-                return True
+    # Check all pattern types
+    all_patterns = [
+        GREETING_PATTERNS,
+        THANKS_PATTERNS,
+        BYE_PATTERNS,
+        YES_NO_PATTERNS
+    ]
+    
+    for patterns in all_patterns:
+        for pattern in patterns:
+            if re.search(pattern, message_lower, re.IGNORECASE):
+                # Ensure it's simple (max 4 words)
+                words = message_lower.split()
+                if len(words) <= 4:
+                    return True
     
     return False
 
 
+# Backward compatibility
+def isSimpleGreeting(message: str) -> bool:
+    """Alias for isSimplePattern"""
+    return isSimplePattern(message)
+
+
 def getSimpleResponse(message: str) -> Tuple[str, dict]:
     """
-    Get simple response for greeting
+    Get simple response based on pattern type
     
     Returns:
         Tuple[content, metadata]
@@ -59,7 +107,19 @@ def getSimpleResponse(message: str) -> Tuple[str, dict]:
     import time
     
     start = time.time()
-    response = random.choice(GREETING_RESPONSES)
+    message_lower = message.lower().strip()
+    
+    # Determine pattern type and select appropriate response
+    if any(re.search(p, message_lower, re.IGNORECASE) for p in THANKS_PATTERNS):
+        response = random.choice(THANKS_RESPONSES)
+    elif any(re.search(p, message_lower, re.IGNORECASE) for p in BYE_PATTERNS):
+        response = random.choice(BYE_RESPONSES)
+    elif any(re.search(p, message_lower, re.IGNORECASE) for p in YES_NO_PATTERNS):
+        response = random.choice(YES_NO_RESPONSES)
+    else:
+        # Default to greeting
+        response = random.choice(GREETING_RESPONSES)
+    
     elapsed = int((time.time() - start) * 1000)
     
     metadata = {

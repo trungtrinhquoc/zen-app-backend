@@ -165,6 +165,84 @@ class OpenRouterService:
                 raise OpenAIException("OpenRouter request timed out")
             else:
                 raise OpenAIException(f"OpenRouter error: {error_msg}")
+    
+    
+    async def chatStreaming(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        maxTokens: int = 1000
+    ):
+        """
+        Stream AI response chunk by chunk (for real-time display)
+        
+        Args:
+            messages: List of message dicts
+            temperature: Sampling temperature
+            maxTokens: Max tokens to generate
+        
+        Yields:
+            str: Content chunks as they arrive
+        
+        Usage:
+            async for chunk in service.chatStreaming(messages):
+                print(chunk, end='', flush=True)
+        """
+        import time
+        
+        if not self.client:
+            logger.error("❌ OpenRouter client not initialized")
+            raise OpenAIException("OpenRouter API key not configured")
+        
+        start_time = time.time()
+        call_type = "STREAMING"
+        
+        logger.info(f"🤖 OpenRouter [{call_type}] - Starting...")
+        logger.info(f"   Model: {self.model}")
+        logger.info(f"   Messages: {len(messages)}")
+        logger.info(f"   Max tokens: {maxTokens}")
+        logger.info(f"   Temperature: {temperature}")
+        
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=maxTokens,
+                stream=True  # Enable streaming
+            )
+            
+            total_content = ""
+            chunk_count = 0
+            
+            async for chunk in response:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        total_content += delta.content
+                        chunk_count += 1
+                        yield delta.content
+            
+            response_time = int((time.time() - start_time) * 1000)
+            
+            logger.info(f"✅ OpenRouter [{call_type}] - Complete")
+            logger.info(f"   Time: {response_time}ms")
+            logger.info(f"   Chunks: {chunk_count}")
+            logger.info(f"   Total chars: {len(total_content)}")
+            
+        except Exception as e:
+            logger.error(f"❌ OpenRouter [{call_type}] - Failed")
+            logger.error(f"   Error: {str(e)}")
+            
+            error_msg = str(e)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                raise OpenAIException("Invalid OpenRouter API key")
+            elif "429" in error_msg or "Rate limit" in error_msg:
+                raise OpenAIException("OpenRouter rate limit exceeded")
+            elif "timeout" in error_msg.lower():
+                raise OpenAIException("OpenRouter request timed out")
+            else:
+                raise OpenAIException(f"OpenRouter error: {error_msg}")
 
 
 # ============================================================
