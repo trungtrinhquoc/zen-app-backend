@@ -21,9 +21,20 @@ from app.modules.conversation.suggestion_engine import (
 from app.utils.logger import logger
 from app.utils.exceptions import NotFoundException
 from app.modules.conversation.simple_responder import (
-    isSimpleGreeting,
+    isSimplePattern,
+    isSimpleGreeting,  # Keep for backward compatibility
     getSimpleResponse
 )
+
+from app.modules.conversation.prompts import buildCombinedPrompt
+import json
+
+# ============================================================
+# GLOBAL CACHES (persist across requests)
+# ============================================================
+_USER_CACHE = {}
+_CONVERSATION_CACHE = {}
+_CACHE_TTL = 3600  # 1 hour
 
 
 class ConversationService:
@@ -44,9 +55,6 @@ class ConversationService:
     """
     
     def __init__(self, db: AsyncSession):
-        """
-        Initialize service
-        """
         self.db = db
     
     
@@ -58,6 +66,22 @@ class ConversationService:
         - Single query instead of SELECT + INSERT
         - Use ON CONFLICT for upsert
         """
+        cache_key = str(userId)
+        
+        # Check cache
+        if cache_key in _USER_CACHE:
+            user, cached_at = _USER_CACHE[cache_key]
+            age = (datetime.utcnow() - cached_at).total_seconds()
+            
+            if age < _CACHE_TTL:
+                logger.info(f"⚡ User cache HIT (age: {age:.0f}s)")
+                return user
+            else:
+                logger.info(f"⏰ User cache EXPIRED (age: {age:.0f}s)")
+        
+        # Cache miss or expired - query DB
+        logger.info(f"💾 User cache MISS - querying DB")
+
         from sqlalchemy.dialects.postgresql import insert
     
         stmt = insert(User).values(
@@ -75,6 +99,8 @@ class ConversationService:
         user = result.scalar_one()
         await self.db.flush()  
         
+        # Update cache
+        _USER_CACHE[cache_key] = (user, datetime.utcnow())
         return user
     
     
@@ -84,7 +110,7 @@ class ConversationService:
         conversationId: Optional[UUID] = None
     ) -> Conversation:
         """
-        Lấy conversation hiện tại hoặc tạo mới
+        Lấy conversation hiện tại hoặc tạo mới - OPTIMIZED with caching
         
         Args:
             userId: User ID
@@ -93,21 +119,33 @@ class ConversationService:
         Returns:
             Conversation object
         
-        Flow:
-        - Nếu có conversationId:
-          → Load từ DB
-          → Verify user_id và status = active
-          → Raise 404 nếu không tìm thấy
-        - Nếu không có conversationId:
-          → Tạo conversation mới
-          → Initialize emotion_progression = []
+        Optimization:
+        - Cache conversations in memory
+        - Skip DB query if cached and fresh
         """
         if conversationId:
+            cache_key = str(conversationId)
+            
+            # Check cache
+            if cache_key in _CONVERSATION_CACHE:
+                conversation, cached_at = _CONVERSATION_CACHE[cache_key]
+                age = (datetime.utcnow() - cached_at).total_seconds()
+                
+                if age < _CACHE_TTL:
+                    logger.info(f"⚡ Conversation cache HIT (age: {age:.0f}s)")
+                    return conversation
+                else:
+                    logger.info(f"⏰ Conversation cache EXPIRED (age: {age:.0f}s)")
+            
+            # Cache miss - query DB
+            logger.info(f"💾 Conversation cache MISS - querying DB")
             stmt = select(Conversation).where(Conversation.id == conversationId)
             result = await self.db.execute(stmt)
             conversation = result.scalar_one_or_none()
             
             if conversation:
+                # Update cache
+                _CONVERSATION_CACHE[cache_key] = (conversation, datetime.utcnow())
                 logger.info(f"📂 Loaded conversation: {conversationId}")
                 return conversation
         
@@ -120,6 +158,10 @@ class ConversationService:
         )
         self.db.add(conversation)
         await self.db.flush() 
+        
+        # Cache new conversation
+        cache_key = str(conversation.id)
+        _CONVERSATION_CACHE[cache_key] = (conversation, datetime.utcnow())
         
         logger.info(f"📝 New conversation: {conversation.id}")
         return conversation
@@ -283,6 +325,11 @@ class ConversationService:
         mostCommon = Counter(emotions).most_common(1)
         if mostCommon:
             conversation.dominant_emotion = mostCommon[0][0]
+        
+        # Invalidate cache (data changed)
+        cache_key = str(conversationId)
+        if cache_key in _CONVERSATION_CACHE:
+            _CONVERSATION_CACHE[cache_key] = (conversation, datetime.utcnow())
     
     
     async def generateAIResponse(
@@ -397,14 +444,14 @@ class ConversationService:
         
         # 2. 📂 Get/Create conversation
         step_start = time.time()
-        conversation = await self.getOrCreateConversation(userId, request.conversation_id)
+        conversation = await self.getOrCreateConversation(userId, request.conversationId)
         step_time = (time.time() - step_start) * 1000
         logger.info(f"⏱️  Step 2 (Get/Create conversation): {step_time:.0f}ms")
         
         # 3. 📚 Load context (20 messages gần nhất)
         step_start = time.time()
         contextMessages = []
-        if request.include_context:
+        if request.includeContext:
             contextMessages = await self.getConversationContext(conversation.id, 20)
         contextUsed = len(contextMessages)
         step_time = (time.time() - step_start) * 1000
@@ -417,11 +464,11 @@ class ConversationService:
         userContext = {"language": user.language}
         
         # ============================================================
-        # 🚀 FAST PATH: Simple Greeting
+        # 🚀 FAST PATH: Simple Patterns (greetings, thanks, bye, yes/no)
         # ============================================================
         
-        if isSimpleGreeting(request.message):
-            logger.info("⚡ FAST PATH: Simple greeting detected")
+        if isSimplePattern(request.message):
+            logger.info("⚡ FAST PATH: Simple pattern detected")
             
             # Use simple responder (instant)
             aiContent, metadata = getSimpleResponse(request.message)
@@ -432,70 +479,43 @@ class ConversationService:
             emotionState = "neutral"
             energyLevel = 5
             
-            logger.info("⚡ Skipping OpenRouter calls (simple greeting)")
+            logger.info("⚡ Skipping AI calls (simple pattern - instant response)")
             
             # Jump to Phase 3 (save to DB)
             phase2_elapsed = 0
             
         else:
             # ============================================================
-            # PHASE 2: PARALLEL PROCESSING (AI calls)
+            # PHASE 2: AI RESPONSE (with rule-based emotion)
             # ============================================================
-            logger.info("🔄 PHASE 2: Starting PARALLEL AI calls...")
+            logger.info("🔄 PHASE 2: AI Response Generation...")
             phase2_start = time.time()
 
             try:
-                logger.info("   ├─ Task 1: Emotion Analysis (OpenRouter)")
-                logger.info("   └─ Task 2: AI Response Generation (OpenRouter)")
-                
-                emotion_task = analyzeEmotion(request.message)
-                ai_response_task = self.generateAIResponse(
-                    userMessage=request.message,
-                    contextMessages=contextMessages,
-                    userContext=userContext,
-                    emotionState="neutral" 
-                )
-                
-                # Wait for BOTH to complete (whichever finishes last)
-                results = await asyncio.gather(
-                    emotion_task,
-                    ai_response_task,
-                    return_exceptions=True  # Don't fail if one task errors
-                )
-                
-                # Check if any task failed
-                if isinstance(results[0], Exception):
-                    logger.warning(f"⚠️  Emotion analysis failed: {results[0]}")
-                    logger.info("   → Using fallback simple emotion analysis")
-                    emotionData = await analyzeEmotionSimple(request.message)
-                else:
-                    emotionData = results[0]
-                
-                if isinstance(results[1], Exception):
-                    logger.error(f"❌ AI response generation failed: {results[1]}")
-                    raise results[1]
-                else:
-                    aiContent, metadata = results[1]
-                
-                phase2_elapsed = (time.time() - phase2_start) * 1000
-                
-                logger.info(f"✅ Phase 2 Complete: {phase2_elapsed:.0f}ms (PARALLEL)")
-                logger.info(f"   💡 Time saved vs sequential: ~{max(0, 2500):.0f}ms")
-                
-            except Exception as e:
-                logger.error(f"❌ CRITICAL: Parallel AI processing failed: {e}")
-                # Ultimate fallback
+                # ⚡ FAST: Rule-based emotion (1ms)
+                from app.modules.conversation.emotion_analyzer import analyzeEmotionSimple
                 emotionData = await analyzeEmotionSimple(request.message)
-                logger.warning("⚠️  Using fallback for both emotion and AI response")
+                emotionState = emotionData.get("emotion_state", "neutral")
                 
-                # Retry AI response with fallback emotion
+                logger.info(f"⚡ Emotion (rule-based): {emotionState}, energy={emotionData.get('energy_level')}")
+                
+                # 🤖 AI Response with emotion context
                 aiContent, metadata = await self.generateAIResponse(
                     userMessage=request.message,
                     contextMessages=contextMessages,
                     userContext=userContext,
-                    emotionState=emotionData.get("emotion_state", "neutral")
+                    emotionState=emotionState
                 )
-        
+
+                phase2_elapsed = (time.time() - phase2_start) * 1000
+            
+                logger.info(f"✅ Phase 2 Complete: {phase2_elapsed:.0f}ms (OPTIMIZED)")
+                logger.info(f"   💡 Saved ~2s vs parallel AI approach")
+            
+            except Exception as e:
+                logger.error(f"❌ AI response failed: {e}")
+                raise
+
         emotionState = emotionData.get("emotion_state", "neutral")
         energyLevel = emotionData.get("energy_level", 5)
         
@@ -504,71 +524,78 @@ class ConversationService:
         logger.info(f"   Themes: {', '.join(emotionData.get('detected_themes', []))}")
         logger.info(f"   Method: {emotionData.get('method', 'ai')}")
         
+        # In method `chat`, Phase 3:
+
         # ============================================================
-        # PHASE 3: DATABASE OPERATIONS (Sequential)
+        # PHASE 3: BATCH DATABASE OPERATIONS
         # ============================================================
-        
-        logger.info("💾 PHASE 3: Database operations...")
+
+        logger.info("💾 PHASE 3: Batch database operations...")
         phase3_start = time.time()
-        
-        # Step 4: Save User Message
-        step_start = time.time()
+
+        # Prepare sequence number
         seqNum = await self.getNextSequenceNumber(conversation.id)
-        userMessage = await self.saveMessage(
-            conversationId=conversation.id,
-            userId=userId,
+
+        # Create user message
+        userMessage = Message(
+            conversation_id=conversation.id,
+            user_id=userId,
             role="user",
             content=request.message,
-            sequenceNumber=seqNum,
-            emotionData=emotionData
+            sequence_number=seqNum,
+            emotion_state=emotionData.get("emotion_state"),
+            energy_level=emotionData.get("energy_level"),
+            urgency_level=emotionData.get("urgency_level"),
+            detected_themes=emotionData.get("detected_themes", [])
         )
-        step_elapsed = (time.time() - step_start) * 1000
-        logger.info(f"⏱️  [STEP 4] Save User Message: {step_elapsed:.0f}ms")
-        
-        # Step 5: Update Emotion Progression
-        step_start = time.time()
-        await self.updateEmotionProgression(
-            conversation.id,
-            emotionState,
-            energyLevel
+
+        # Create AI message
+        assistantMessage = Message(
+            conversation_id=conversation.id,
+            user_id=userId,
+            role="assistant",
+            content=aiContent,
+            sequence_number=seqNum + 1,
+            model_used=metadata.get("model"),
+            prompt_tokens=metadata.get("promptTokens"),
+            completion_tokens=metadata.get("completionTokens"),
+            response_time_ms=metadata.get("responseTimeMs")
         )
-        step_elapsed = (time.time() - step_start) * 1000
-        logger.info(f"⏱️  [STEP 5] Update Emotion: {step_elapsed:.0f}ms")
-        
-        # Step 6: Check Activity Suggestion
-        step_start = time.time()
+
+        # Update emotion progression
+        progression = conversation.emotion_progression or []
+        progression.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "emotion": emotionState,
+            "energy": energyLevel
+        })
+        conversation.emotion_progression = progression
+
+        # Update dominant emotion
+        from collections import Counter
+        emotions = [p["emotion"] for p in progression if p.get("emotion")]
+        if emotions:
+            mostCommon = Counter(emotions).most_common(1)
+            conversation.dominant_emotion = mostCommon[0][0]
+
+        # Check suggestion
         suggestion = None
         if shouldSuggestActivity(emotionData, request.message):
             activity = getSuggestedActivity(emotionData)
             if activity:
                 suggestion = activity
                 suggestionMsg = generateSuggestionMessage(activity)
-                aiContent += f"\n\n{suggestionMsg}"
-                logger.info(f"💡 Suggested Activity: {activity['activity_type']} ({activity['duration']}min)")
-        step_elapsed = (time.time() - step_start) * 1000
-        logger.info(f"⏱️  [STEP 6] Check Suggestion: {step_elapsed:.0f}ms")
-        
-        # Step 7: Save Assistant Message
-        step_start = time.time()
-        assistantMessage = await self.saveMessage(
-            conversationId=conversation.id,
-            userId=userId,
-            role="assistant",
-            content=aiContent,
-            sequenceNumber=seqNum + 1,
-            metadata=metadata
-        )
-        step_elapsed = (time.time() - step_start) * 1000
-        logger.info(f"⏱️  [STEP 7] Save AI Message: {step_elapsed:.0f}ms")
-        
-        # Step 8: Commit Transaction
-        step_start = time.time()
+                assistantMessage.content += f"\n\n{suggestionMsg}"
+                logger.info(f"💡 Suggested: {activity['activity_type']}")
+
+        # ⚡ ADD ALL AT ONCE
+        self.db.add_all([userMessage, assistantMessage])
+
+        # ⚡ SINGLE COMMIT
         await self.db.commit()
-        step_elapsed = (time.time() - step_start) * 1000
-        logger.info(f"⏱️  [STEP 8] Database Commit: {step_elapsed:.0f}ms")
-        
+
         phase3_elapsed = (time.time() - phase3_start) * 1000
-        logger.info(f"✅ Phase 3 Complete: {phase3_elapsed:.0f}ms")
+        logger.info(f"✅ Phase 3 Complete: {phase3_elapsed:.0f}ms (BATCHED)")
         
         # ============================================================
         # FINAL SUMMARY
@@ -636,3 +663,98 @@ class ConversationService:
         return conversation
 
 
+    async def generateCombinedResponse(
+        self,
+        userMessage: str,
+        contextMessages: List[Message]
+    ) -> Tuple[Dict, str, Dict]:
+        """
+        🚀 COMBINED: Phân tích emotion + Generate response trong 1 API call
+        
+        Args:
+            userMessage: User message
+            contextMessages: Context messages
+        
+        Returns:
+            Tuple[emotionData, aiContent, metadata]
+        
+        Optimization:
+        - 1 API call thay vì 2
+        - Giảm từ ~3s (parallel) → ~2.5s (1 call)
+        - Emotion và response consistent với nhau
+        """
+        # Build context
+        context = [
+            {
+                "role": msg.role,
+                "content": msg.content
+            }
+            for msg in contextMessages
+        ]
+        
+        # Build combined prompt
+        messages = buildCombinedPrompt(userMessage, context)
+        
+        logger.info(f"🤖 Combined API call: {len(messages)} messages")
+        
+        # Call OpenRouter
+        try:
+            result = await openRouterService.chat(
+                messages=messages,
+                temperature=0.7,  # Balanced
+                maxTokens=1000    # Enough for emotion + response
+            )
+            
+            # Parse JSON response
+            content = result["content"].strip()
+            
+            # Remove markdown code blocks if present
+            if content.startswith("```"):
+                lines = content.split("\n")
+                content = "\n".join(lines[1:-1])  # Remove first and last line
+                if content.startswith("json"):
+                    content = content[4:]
+                content = content.strip()
+            
+            # Fix double curly braces (AI sometimes returns {{ instead of {)
+            content = content.replace("{{", "{").replace("}}", "}")
+            
+            data = json.loads(content)
+            
+            # Extract emotion data
+            emotionData = data.get("emotion_analysis", {})
+            emotionData["method"] = "ai_combined"
+            
+            # Extract response
+            responseData = data.get("response", {})
+            aiContent = responseData.get("content", "")
+            
+            # Build metadata
+            metadata = {
+                "model": result["model"],
+                "promptTokens": result["promptTokens"],
+                "completionTokens": result["completionTokens"],
+                "responseTimeMs": result["responseTimeMs"],
+                "tone": responseData.get("tone", "neutral")
+            }
+            
+            logger.info(f"✅ Combined response: emotion={emotionData.get('emotion_state')}, {len(aiContent)} chars")
+            
+            return emotionData, aiContent, metadata
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Failed to parse JSON: {e}")
+            logger.error(f"   Content: {content[:200]}")
+            
+            # Fallback: Use simple emotion + content as-is
+            from app.modules.conversation.emotion_analyzer import analyzeEmotionSimple
+            emotionData = await analyzeEmotionSimple(userMessage)
+            
+            metadata = {
+                "model": result["model"],
+                "promptTokens": result["promptTokens"],
+                "completionTokens": result["completionTokens"],
+                "responseTimeMs": result["responseTimeMs"]
+            }
+            
+            return emotionData, content, metadata

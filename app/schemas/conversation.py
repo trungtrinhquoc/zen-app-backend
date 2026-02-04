@@ -2,10 +2,16 @@
 Conversation Schemas
 Request/Response validation với Pydantic
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from uuid import UUID
 from typing import Optional, List, Literal, Dict
+
+
+def to_camel(string: str) -> str:
+    """Convert snake_case to camelCase"""
+    components = string.split('_')
+    return components[0] + ''.join(x.title() for x in components[1:])
 
 
 class MessageResponse(BaseModel):
@@ -16,7 +22,14 @@ class MessageResponse(BaseModel):
     - Dùng để serialize Message model → JSON response
     - model_config từ ORM objects
     - Optional fields có thể None
+    - alias_generator: Convert snake_case → camelCase for JSON
     """
+    model_config = ConfigDict(
+        from_attributes=True,
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
+    
     id: UUID
     role: Literal["user", "assistant", "system"]
     content: str
@@ -35,8 +48,6 @@ class MessageResponse(BaseModel):
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     response_time_ms: Optional[int] = None
-    
-    model_config = {"from_attributes": True}
 
 
 class ChatRequest(BaseModel):
@@ -47,18 +58,28 @@ class ChatRequest(BaseModel):
     - Validate input từ client
     - Field(...): Required field
     - min_length, max_length: String validation
+    - Accepts both camelCase and snake_case input
     """
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
+    
+    userId: UUID = Field(
+        ...,
+        description="User ID"
+    )
     message: str = Field(
         ...,
         min_length=1,
         max_length=5000,
         description="User message content"
     )
-    conversation_id: Optional[UUID] = Field(
+    conversationId: Optional[UUID] = Field(
         None,
         description="Conversation ID (null = create new)"
     )
-    include_context: bool = Field(
+    includeContext: bool = Field(
         True,
         description="Include chat history for context"
     )
@@ -74,7 +95,13 @@ class ChatResponse(BaseModel):
     - assistant_message: AI response
     - context_used: Số messages đã dùng làm context
     - suggestion: Activity suggestion (nếu có)
+    - Output as camelCase JSON
     """
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
+    
     conversation_id: UUID
     user_message: MessageResponse
     assistant_message: MessageResponse
@@ -84,6 +111,12 @@ class ChatResponse(BaseModel):
 
 class ConversationResponse(BaseModel):
     """Conversation summary response"""
+    model_config = ConfigDict(
+        from_attributes=True,
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
+    
     id: UUID
     user_id: UUID
     title: Optional[str]
@@ -92,8 +125,6 @@ class ConversationResponse(BaseModel):
     dominant_emotion: Optional[str]
     started_at: datetime
     created_at: datetime
-    
-    model_config = {"from_attributes": True}
 
 
 class ConversationDetailResponse(ConversationResponse):

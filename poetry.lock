@@ -1944,6 +1944,17 @@ files = [
 windows-terminal = ["colorama (>=0.4.6)"]
 
 [[package]]
+name = "pyhumps"
+version = "3.8.0"
+description = "🐫  Convert strings (and dictionary keys) between snake case, camel case and pascal case in Python. Inspired by Humps for Node"
+optional = false
+python-versions = "*"
+files = [
+    {file = "pyhumps-3.8.0-py3-none-any.whl", hash = "sha256:060e1954d9069f428232a1adda165db0b9d8dfdce1d265d36df7fbff540acfd6"},
+    {file = "pyhumps-3.8.0.tar.gz", hash = "sha256:498026258f7ee1a8e447c2e28526c0bea9407f9a59c03260aee4bd6c04d681a3"},
+]
+
+[[package]]
 name = "pyiceberg"
 version = "0.10.0"
 description = "Apache Iceberg is an open table format for huge analytic datasets"
@@ -2698,6 +2709,27 @@ pymysql = ["pymysql"]
 sqlcipher = ["sqlcipher3_binary"]
 
 [[package]]
+name = "sse-starlette"
+version = "3.2.0"
+description = "SSE plugin for Starlette"
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "sse_starlette-3.2.0-py3-none-any.whl", hash = "sha256:5876954bd51920fc2cd51baee47a080eb88a37b5b784e615abb0b283f801cdbf"},
+    {file = "sse_starlette-3.2.0.tar.gz", hash = "sha256:8127594edfb51abe44eac9c49e59b0b01f1039d0c7461c6fd91d4e03b70da422"},
+]
+
+[package.dependencies]
+anyio = ">=4.7.0"
+starlette = ">=0.49.1"
+
+[package.extras]
+daphne = ["daphne (>=4.2.0)"]
+examples = ["aiosqlite (>=0.21.0)", "fastapi (>=0.115.12)", "sqlalchemy[asyncio] (>=2.0.41)", "uvicorn (>=0.34.0)"]
+granian = ["granian (>=2.3.1)"]
+uvicorn = ["uvicorn (>=0.34.0)"]
+
+[[package]]
 name = "starlette"
 version = "0.50.0"
 description = "The little ASGI library that shines."
@@ -3400,4 +3432,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.11,<3.15"
-content-hash = "539efcdd2e0cd42b77e67f681f82aea3bb3ed257ad699ff1793f9fbfa401efff"
+content-hash = "cfbcbdc10c8eaa1e804827f3eded2632f0e25052fc2f5e199b7722993d8f5c68"
