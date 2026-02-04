@@ -54,33 +54,29 @@ def getSupabase() -> Client:
 # ============================================
 # SQLALCHEMY ASYNC ENGINE
 # ============================================
-
-# Chuyển đổi connection string
-# postgresql:// -> postgresql+asyncpg:// (async driver)
-# Loại bỏ các query parameters không được hỗ trợ bởi asyncpg
 DATABASE_URL = settings.DATABASE_URL.replace(
     "postgresql://", 
     "postgresql+asyncpg://"
-).split("?")[0]  # Loại bỏ ?pgbouncer=true và các params khác
+).split("?")[0]  
 
-# Tạo async engine
+
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,  # Log SQL queries khi DEBUG=True
-    future=True,  # SQLAlchemy 2.0 style
-    pool_pre_ping=True,  # Test connection trước khi dùng
-    pool_size=10,  # Số connections trong pool
-    max_overflow=20,  # Max connections khi pool đầy
-    pool_recycle=3600,  # Recycle connection sau 1 giờ
+    echo=False,
+    pool_size=20,           # Tăng số lượng kết nối sẵn có
+    max_overflow=40,        # Cho phép mở rộng thêm khi quá tải
+    pool_timeout=30,        # Thời gian chờ kết nối
+    pool_recycle=3600,      # Làm mới kết nối sau mỗi giờ
+    pool_pre_ping=True,     # Kiểm tra kết nối trước khi dùng để tránh lỗi "broken pipe"
     connect_args={
-        "statement_cache_size": 0,  # Tắt prepared statements cho pgbouncer
+        "statement_cache_size": 0,  # Bắt buộc để chạy ổn định với Supabase PgBouncer
         "server_settings": {
-            "application_name": "zen-app-backend"
+            "application_name": "zen-app-backend",
+            "jit": "off"            
         }
     }
 )
 
-#logger.info("✅ SQLAlchemy async engine created")
 
 
 # Tạo session factory
