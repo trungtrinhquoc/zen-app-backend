@@ -92,19 +92,103 @@ async def analyzeEmotion(message: str) -> Dict:
             "detected_themes": []
         }
 
+    """
+Simple Rule-Based Emotion Analyzer
+Dùng làm fallback hoặc cho messages ngắn
+"""
 
-"""
-Giải thích Emotion Analysis:
-- Tại sao dùng AI thay vì rule-based?
-  → AI hiểu context tốt hơn
-  → Detect nuanced emotions
-  → Multilingual support
-  
-- Temperature = 0.2:
-  → Low temp = consistent output
-  → Quan trọng cho JSON parsing
-  
-- Fallback mechanism:
-  → Nếu AI fail → return neutral
-  → App không crash
-"""
+async def analyzeEmotionSimple(message: str) -> Dict:
+    """
+    🚀 FAST emotion analysis - Rule-based
+    
+    Tại sao cần:
+    - Không cần call OpenRouter (instant ~1ms)
+    - Fallback khi OpenRouter fail
+    - Đủ tốt cho messages đơn giản
+    
+    How it works:
+    - Keyword matching cho emotions
+    - Rule-based urgency detection
+    - Theme extraction từ keywords
+    
+    Args:
+        message: User message text
+    
+    Returns:
+        {
+            "emotion_state": "calm",
+            "energy_level": 5,
+            "urgency_level": "low",
+            "detected_themes": ["work"],
+            "method": "rule_based"
+        }
+    """
+    message_lower = message.lower()
+    
+    # Emotion keywords (multi-language support)
+    emotion_keywords = {
+        "anxious": ["lo lắng", "anxiety", "căng thẳng", "stress", "anxious", "lo au", "bồn chồn", "nervous"],
+        "sad": ["buồn", "sad", "depressed", "tủi thân", "thất vọng", "hopeless", "lonely", "cô đơn", "chán đời"],
+        "happy": ["vui", "happy", "excited", "tuyệt vời", "행복", "great", "vui vẻ", "hạnh phúc", "wonderful"],
+        "angry": ["tức", "angry", "giận", "mad", "bực mình", "annoyed", "phẫn nộ", "furious"],
+        "tired": ["mệt", "tired", "exhausted", "kiệt sức", "mệt mỏi", "đuối", "uể oải", "fatigue"],
+        "stressed": ["stress", "áp lực", "pressure", "overwhelmed", "nặng nề", "quá tải"],
+        "calm": ["bình tĩnh", "calm", "peaceful", "thư giãn", "relaxed", "nhẹ nhõm", "an yên"],
+        "confused": ["confused", "bối rối", "hoang mang", "không biết làm sao", "mông lung", "lost"],
+    }
+    
+    # Urgency indicators
+    urgent_keywords = [
+        "cấp bách", "urgent", "help", "giúp", "emergency", "cứu", 
+        "muốn chết", "suicide", "tự tử", "hoảng loạn", "panic attack"
+    ]
+    
+    # Initialize defaults
+    detected_emotion = "neutral"
+    urgency = "low"
+    energy = 5
+    themes = []
+    
+    # 1. Detect emotion
+    for emotion, keywords in emotion_keywords.items():
+        if any(kw in message_lower for kw in keywords):
+            detected_emotion = emotion
+            break
+    
+    # 2. Detect urgency
+    if any(kw in message_lower for kw in urgent_keywords):
+        urgency = "high"
+        energy = 3
+    elif "?" in message or "help" in message_lower:
+        urgency = "medium"
+    
+    # 3. Energy level based on emotion
+    energy_map = {
+        "happy": 8, "excited": 9, "calm": 6, "peaceful": 7,
+        "tired": 3, "sad": 4, "anxious": 4, "depressed": 2,
+        "stressed": 3, "angry": 6, "overwhelmed": 2,
+        "neutral": 5, "confused": 4
+    }
+    energy = energy_map.get(detected_emotion, 5)
+    
+    # 4. Theme detection
+    theme_keywords = {
+        "work": ["công việc", "work", "job", "deadline", "boss", "meeting", "sếp", "đồng nghiệp", "văn phòng"],
+        "health": ["sức khỏe", "health", "sick", "pain", "doctor", "đau", "ốm", "bệnh", "mệt trong người"],
+        "relationship": ["relationship", "bạn bè", "gia đình", "love", "người yêu", "chia tay", "breakup", "family", "friends"],
+        "sleep": ["ngủ", "sleep", "insomnia", "mất ngủ", "thức đêm", "khó ngủ"],
+        "money": ["tiền", "money", "financial", "lương", "nợ", "kinh tế", "finance"],
+        "study": ["học", "study", "exam", "school", "thi cử", "điểm số", "trường học", "university"],
+    }
+    
+    for theme, keywords in theme_keywords.items():
+        if any(kw in message_lower for kw in keywords):
+            themes.append(theme)
+    
+    return {
+        "emotion_state": detected_emotion,
+        "energy_level": energy,
+        "urgency_level": urgency,
+        "detected_themes": themes if themes else ["general"],
+        "method": "rule_based"
+    }

@@ -1,11 +1,9 @@
 """
-OpenRouter Client Service
-Gọi AI models qua OpenRouter API
+OpenRouter API Client
+Sử dụng OpenAI SDK để gọi OpenRouter API
 """
+from typing import List, Dict
 from openai import AsyncOpenAI
-from typing import List, Dict, Any, Optional
-import time
-
 from app.core.config import settings
 from app.utils.logger import logger
 from app.utils.exceptions import OpenAIException
@@ -13,21 +11,34 @@ from app.utils.exceptions import OpenAIException
 
 class OpenRouterService:
     """
-    OpenRouter service
+    OpenRouter API Service using OpenAI SDK
+    
+    OpenRouter tương thích với OpenAI API format,
+    nên ta dùng AsyncOpenAI client với custom base_url
     """
     
     def __init__(self):
         """
-        Initialize OpenRouter client
-        """
-        self.client = AsyncOpenAI(
-            api_key=settings.OPENROUTER_API_KEY,
-            base_url="https://openrouter.ai/api/v1"
-        )
-        self.model = settings.OPENROUTER_MODEL
-        self.requestCount = 0
+        Initialize OpenRouter service
         
-        logger.info(f"✅ OpenRouter initialized: {self.model}")
+        OpenRouter API:
+        - Base URL: https://openrouter.ai/api/v1
+        - API Key: From settings
+        - Compatible với OpenAI SDK
+        """
+        self.api_key = settings.OPENROUTER_API_KEY
+        self.model = settings.OPENROUTER_MODEL
+        
+        if not self.api_key:
+            logger.warning("⚠️  OpenRouter API key not configured")
+            self.client = None
+        else:
+            # Initialize AsyncOpenAI client with OpenRouter base URL
+            self.client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url="https://openrouter.ai/api/v1"
+            )
+            logger.info(f"✅ OpenRouter client initialized: {self.model}")
     
     
     async def chat(
@@ -37,52 +48,127 @@ class OpenRouterService:
         maxTokens: int = 1000
     ) -> Dict:
         """
-        Call OpenRouter API via OpenAI-compatible SDK
+        Call OpenRouter API using OpenAI SDK
+        
+        Args:
+            messages: List of message dicts với role & content
+            temperature: Sampling temperature (0-2)
+            maxTokens: Max tokens to generate
+        
+        Returns:
+            {
+                "content": str,
+                "model": str,
+                "promptTokens": int,
+                "completionTokens": int,
+                "responseTimeMs": int
+            }
+        
+        Raises:
+            OpenAIException: If API call fails
         """
+        import time
+        
+        # ============================================================
+        # VALIDATE CLIENT
+        # ============================================================
+        
+        if not self.client:
+            logger.error("❌ OpenRouter client not initialized (missing API key)")
+            raise OpenAIException(
+                "OpenRouter API key not configured. "
+                "Please set OPENROUTER_API_KEY in .env file"
+            )
+        
+        # ============================================================
+        # DETERMINE CALL TYPE
+        # ============================================================
+        
+        call_type = "UNKNOWN"
+        if len(messages) >= 2:
+            system_msg = messages[0].get("content", "").lower()
+            if "phân tích" in system_msg or "emotion" in system_msg or "analyze" in system_msg:
+                call_type = "EMOTION_ANALYSIS"
+            else:
+                call_type = "AI_RESPONSE"
+        
+        # ============================================================
+        # MAKE API CALL WITH TIMING
+        # ============================================================
+        
         try:
             start_time = time.time()
-            self.requestCount += 1
-
-            logger.info("🤖 OpenRouter API call starting...")
-            logger.info(f"   Messages: {len(messages)}, Model: {self.model}, Max tokens: {maxTokens}")
-
+            
+            logger.info(f"🤖 OpenRouter [{call_type}] - Starting...")
+            logger.info(f"   Model: {self.model}")
+            logger.info(f"   Messages: {len(messages)}")
+            logger.info(f"   Max tokens: {maxTokens}")
+            logger.info(f"   Temperature: {temperature}")
+            
+            # Call OpenRouter via OpenAI SDK
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=maxTokens,
+                extra_headers={
+                    "HTTP-Referer": "https://zenapp.com",
+                    "X-Title": "Zen APP"
+                }
             )
-
+            
             end_time = time.time()
             response_time = int((end_time - start_time) * 1000)
-
+            
+            # ============================================================
+            # EXTRACT DATA
+            # ============================================================
+            
             content = response.choices[0].message.content
-            promptTokens = response.usage.prompt_tokens
-            completionTokens = response.usage.completion_tokens
-
-            logger.info("✅ OpenRouter API response received")
+            prompt_tokens = response.usage.prompt_tokens
+            completion_tokens = response.usage.completion_tokens
+            total_tokens = prompt_tokens + completion_tokens
+            
+            # ============================================================
+            # LOG SUCCESS
+            # ============================================================
+            
+            logger.info(f"✅ OpenRouter [{call_type}] - Complete")
             logger.info(f"   Time: {response_time}ms")
-            logger.info(f"   Tokens: {completionTokens} completion, {promptTokens} prompt")
-
+            logger.info(f"   Tokens: {completion_tokens} completion / {prompt_tokens} prompt / {total_tokens} total")
+            logger.info(f"   Response: {len(content)} chars")
+            
+            # Performance warning
+            if response_time > 5000:
+                logger.warning(f"⚠️  Slow response: {response_time}ms (>5s)")
+            
             return {
                 "content": content,
                 "model": self.model,
-                "promptTokens": promptTokens,
-                "completionTokens": completionTokens,
+                "promptTokens": prompt_tokens,
+                "completionTokens": completion_tokens,
                 "responseTimeMs": response_time
             }
-
+            
         except Exception as e:
-            logger.error(f"❌ OpenRouter error: {str(e)}")
-            raise OpenAIException(f"OpenRouter request failed: {str(e)}")
+            logger.error(f"❌ OpenRouter [{call_type}] - Failed")
+            logger.error(f"   Error: {str(e)}")
+            logger.error(f"   Type: {type(e).__name__}")
+            
+            # Handle specific OpenAI errors
+            error_msg = str(e)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                raise OpenAIException("Invalid OpenRouter API key")
+            elif "429" in error_msg or "Rate limit" in error_msg:
+                raise OpenAIException("OpenRouter rate limit exceeded")
+            elif "timeout" in error_msg.lower():
+                raise OpenAIException("OpenRouter request timed out")
+            else:
+                raise OpenAIException(f"OpenRouter error: {error_msg}")
 
 
-# Singleton instance
+# ============================================================
+# SINGLETON INSTANCE
+# ============================================================
+
 openRouterService = OpenRouterService()
-
-"""
-Giải thích Singleton:
-- Chỉ tạo 1 instance duy nhất
-- Chia sẻ giữa tất cả requests
-- Tránh tạo connection mới liên tục
-"""
