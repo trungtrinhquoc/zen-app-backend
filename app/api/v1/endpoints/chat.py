@@ -8,7 +8,7 @@ from uuid import UUID
 from typing import List
 
 from app.database import getDbSession
-from app.schemas import ChatRequest, ChatResponse, ConversationResponse, ConversationDetailResponse
+from app.schemas import ChatRequest, ChatResponse, ConversationResponse, ConversationDetailResponse, MessageResponse
 from app.modules.conversation.service import ConversationService
 from sqlalchemy import select, desc
 
@@ -126,6 +126,60 @@ async def getConversation(
     return conversation
 
 
+# Thêm vào cuối file chat.py, trước dòng cuối
+
+@router.post("/greeting")
+async def getProactiveGreeting(
+    request: ChatRequest,
+    db: AsyncSession = Depends(getDbSession)
+):
+    """
+    🌟 Get proactive greeting for new conversation
+    
+    Frontend gọi endpoint này khi:
+    - User mở app lần đầu
+    - User tạo conversation mới
+    
+    Response:
+    {
+        "conversationId": "uuid",
+        "assistantMessage": {
+            "content": "Mình ở đây với bạn. Bạn cảm thấy thế nào? 💙",
+            ...
+        }
+    }
+    """
+    service = ConversationService(db)
+    
+    # 1. Get or create user
+    user = await service.getOrCreateUser(request.userId)
+    
+    # 2. Get or create conversation
+    conversation = await service.getOrCreateConversation(
+        userId=request.userId,
+        conversationId=request.conversationId
+    )
+    
+    # 3. Check if should send greeting
+    shouldGreet = await service.shouldSendProactiveGreeting(conversation.id)
+    
+    if shouldGreet:
+        # 4. Send proactive greeting
+        greetingMessage = await service.sendProactiveGreeting(
+            conversationId=conversation.id,
+            userId=request.userId
+        )
+        
+        return {
+            "conversationId": conversation.id,
+            "assistantMessage": MessageResponse.model_validate(greetingMessage)
+        }
+    else:
+        # Already has messages, no greeting needed
+        return {
+            "conversationId": conversation.id,
+            "assistantMessage": None
+        }
 """
 Giải thích FastAPI Endpoints:
 

@@ -382,6 +382,55 @@ class ConversationService:
         
         return result["content"], metadata
     
+    # Thêm vào cuối class ConversationService (trước method chat)
+
+    async def shouldSendProactiveGreeting(self, conversationId: UUID) -> bool:
+        """
+        Kiểm tra xem có nên gửi proactive greeting không
+        
+        Returns:
+            True nếu là conversation mới (chưa có message)
+        """
+        stmt = select(func.count(Message.id)).where(
+            Message.conversation_id == conversationId
+        )
+        result = await self.db.execute(stmt)
+        messageCount = result.scalar()
+        
+        return messageCount == 0
+
+
+    async def sendProactiveGreeting(self, conversationId: UUID, userId: UUID) -> Message:
+        """
+        Gửi proactive greeting message khi user vào conversation mới
+        
+        Returns:
+            Assistant message object
+        """
+        from app.modules.conversation.prompts import getProactiveGreeting
+        
+        greetingContent = getProactiveGreeting()
+        
+        # Save greeting message
+        message = await self.saveMessage(
+            conversationId=conversationId,
+            userId=userId,
+            role="assistant",
+            content=greetingContent,
+            sequenceNumber=1,
+            metadata={
+                "model": "proactive-greeting",
+                "promptTokens": 0,
+                "completionTokens": 0,
+                "responseTimeMs": 0
+            }
+        )
+        
+        await self.db.commit()
+        logger.info(f"✅ Sent proactive greeting: {greetingContent}")
+        
+        return message
+
     async def chat(self, userId: UUID, request: ChatRequest) -> ChatResponse:
         """
         🚀 OPTIMIZED CHAT FUNCTION

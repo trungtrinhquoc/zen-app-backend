@@ -1,8 +1,9 @@
 """
 Simple Responder
-Fast responses for common patterns without AI
+Fast responses for common patterns without AI - ENHANCED
 """
 import re
+import random
 from typing import Optional, Tuple
 
 
@@ -27,31 +28,32 @@ BYE_PATTERNS = [
 ]
 
 YES_NO_PATTERNS = [
-    r'^(có|không|ok|okay|oke|yes|no|yep|nope|yeah|nah)$',
+    r'^(có|không|ok|okay|oke|yes|no|yep|nope|yeah|nah|ừ|uh|à)$',
 ]
 
+# ENHANCED responses - tự nhiên hơn
 GREETING_RESPONSES = [
-    "Xin chào! Mình rất vui được nói chuyện với bạn hôm nay. Bạn có muốn chia sẻ điều gì không? 💙",
-    "Chào bạn! Mình ở đây để lắng nghe bạn. Bạn cảm thấy thế nào hôm nay? 🌸",
-    "Hello! Rất vui được gặp bạn. Hãy thoải mái chia sẻ bất cứ điều gì bạn muốn nhé. ✨",
+    "Mình ở đây với bạn. Hãy thoải mái chia sẻ bất cứ điều gì bạn muốn nhé. 💙",
+    "Chào bạn! Mình rất vui được đồng hành cùng bạn hôm nay. Bạn cảm thấy thế nào? 🌸",
+    "Xin chào! Mình ở đây để lắng nghe bạn. Bạn muốn nói về điều gì không? ✨",
 ]
 
 THANKS_RESPONSES = [
     "Không có gì đâu bạn! Mình luôn ở đây khi bạn cần. 💙",
-    "Rất vui được giúp bạn! Bạn cảm thấy thế nào rồi? 🌸",
-    "Bạn không cần cảm ơn đâu. Mình luôn sẵn sàng lắng nghe bạn nhé. ✨",
+    "Bạn không cần cảm ơn đâu. Mình luôn sẵn sàng lắng nghe bạn. 🌸",
+    "Rất vui được đồng hành cùng bạn! 💙",
 ]
 
 BYE_RESPONSES = [
-    "Tạm biệt bạn! Hãy chăm sóc bản thân nhé. Mình luôn ở đây khi bạn cần. 💙",
+    "Tạm biệt bạn! Hãy chăm sóc bản thân nhé. 💙",
     "Hẹn gặp lại bạn! Chúc bạn một ngày tốt lành. 🌸",
-    "Bye bye! Nhớ nghỉ ngơi đầy đủ nhé. See you soon! ✨",
+    "Bye bye! Mình luôn ở đây khi bạn cần nhé. ✨",
 ]
 
 YES_NO_RESPONSES = [
-    "Mình hiểu rồi. Bạn có muốn chia sẻ thêm gì không? 💙",
+    "Mình hiểu rồi. Bạn muốn chia sẻ thêm gì không? 💙",
     "Okay! Bạn cảm thấy thế nào về điều đó? 🌸",
-    "Được rồi. Mình đang lắng nghe bạn đây. ✨",
+    "Mình đang lắng nghe bạn đây. ✨",
 ]
 
 
@@ -65,29 +67,32 @@ def isSimplePattern(message: str) -> bool:
     Returns:
         True if matches simple pattern
     """
-    message_lower = message.lower().strip()
-    
-    # Short message check (max 30 chars for fast path)
-    if len(message_lower) > 30:
-        return False
-    
-    # Check all pattern types
-    all_patterns = [
-        GREETING_PATTERNS,
-        THANKS_PATTERNS,
-        BYE_PATTERNS,
-        YES_NO_PATTERNS
-    ]
-    
-    for patterns in all_patterns:
-        for pattern in patterns:
-            if re.search(pattern, message_lower, re.IGNORECASE):
-                # Ensure it's simple (max 4 words)
-                words = message_lower.split()
-                if len(words) <= 4:
-                    return True
-    
     return False
+    
+    # DISABLE SOFT MATCHING - FORCE AI
+    # message_lower = message.lower().strip()
+    # 
+    # # Short message check (max 30 chars for fast path)
+    # if len(message_lower) > 30:
+    #     return False
+    # 
+    # # Check all pattern types
+    # all_patterns = [
+    #     GREETING_PATTERNS,
+    #     THANKS_PATTERNS,
+    #     BYE_PATTERNS,
+    #     YES_NO_PATTERNS
+    # ]
+    # 
+    # for patterns in all_patterns:
+    #     for pattern in patterns:
+    #         if re.search(pattern, message_lower, re.IGNORECASE):
+    #             # Ensure it's simple (max 4 words)
+    #             words = message_lower.split()
+    #             if len(words) <= 4:
+    #                 return True
+    # 
+    # return False
 
 
 # Backward compatibility
@@ -103,7 +108,6 @@ def getSimpleResponse(message: str) -> Tuple[str, dict]:
     Returns:
         Tuple[content, metadata]
     """
-    import random
     import time
     
     start = time.time()
