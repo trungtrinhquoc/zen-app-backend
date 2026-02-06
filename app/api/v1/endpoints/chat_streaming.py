@@ -19,7 +19,8 @@ from app.modules.conversation.emotion_analyzer import analyzeEmotionSimple
 from app.modules.conversation.suggestion_engine import (
     shouldSuggestActivity,
     getSuggestedActivity,
-    generateSuggestionMessage
+    generateSuggestionMessage,
+    ConversationContext  # NEW: For smart suggestions
 )
 from app.services.openrouter_client import openRouterService
 from app.modules.conversation.prompts import getSystemPrompt, formatMessagesForAI
@@ -227,15 +228,54 @@ async def streamChatResponse(
         
         seqNum = len(contextMessages) + 1
         
+        # Get last assistant message for suggestion logic
+        lastAssistantMsg = ""
+        for msg in reversed(contextMessages):
+            if msg.role == "assistant":  # Direct attribute access for SQLAlchemy object
+                lastAssistantMsg = msg.content
+                break
+        
+        # Create conversation context for smart suggestions
+        context = ConversationContext(
+            turn_count=seqNum,
+            last_assistant_message=lastAssistantMsg
+        )
+        
+        # Rebuild context state: check if we already suggested in this conversation
+        # by looking for suggestion metadata in previous assistant messages
+        for msg in contextMessages:
+            if msg.role == "assistant" and msg.metadata:
+                # Check if this message had a suggestion
+                if isinstance(msg.metadata, dict) and msg.metadata.get("suggestion"):
+                    context.has_suggested_in_session = True
+                    suggested_type = msg.metadata["suggestion"].get("activity_type")
+                    if suggested_type:
+                        context.suggested_activities.append(suggested_type)
+        
+        logger.info(f"📊 Context: turn={seqNum}, has_suggested={context.has_suggested_in_session}, suggested={context.suggested_activities}")
+        
         # Check suggestion BEFORE saving
         suggestion = None
-        if shouldSuggestActivity(emotionData, request.message):
-            activity = getSuggestedActivity(emotionData)
+        if shouldSuggestActivity(
+            emotionData, 
+            request.message,
+            conversationTurnCount=seqNum,
+            lastAssistantMessage=lastAssistantMsg,
+            context=context  # Pass context to check if already suggested
+        ):
+            activity = getSuggestedActivity(
+                emotionData, 
+                userMessage=request.message,
+                userLanguage=user.language or "vi",
+                context=context  # Pass context for smart matching
+            )
             if activity:
                 suggestion = activity
                 suggestionMsg = generateSuggestionMessage(activity)
                 full_content += f"\n\n{suggestionMsg}"
                 logger.info(f"💡 Suggested: {activity['activity_type']}")
+        
+        
         
         # Save user message
         await service.saveMessage(
