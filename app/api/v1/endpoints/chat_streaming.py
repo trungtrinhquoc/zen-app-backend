@@ -26,6 +26,7 @@ from app.services.openrouter_client import openRouterService
 from app.modules.conversation.prompts import getSystemPrompt, formatMessagesForAI
 from app.utils.logger import logger
 from app.models import Conversation
+from app.modules.memory.service import MemoryService
 from datetime import datetime
 
 router = APIRouter()
@@ -188,6 +189,30 @@ async def streamChatResponse(
         emotionState = emotionData.get("emotion_state", "neutral")
         
         # ============================================================
+        # PHASE 2.5: Search Relevant Memories (OPTIMIZED)
+        # ============================================================
+        
+        # Only search if conversation has enough context
+        memoryContext = ""
+        if len(contextMessages) >= 3:
+            memoryService = MemoryService(db)
+            relevantMemories = await memoryService.searchSemanticMemories(
+                userId=userId,
+                query=request.message,
+                limit=5,  # Increased from 3
+                minImportance=0.2,  # Lowered from 0.3
+                minSimilarity=0.60  # Lowered from 0.65 for better recall
+            )
+            
+            # Build memory context for system prompt
+            if relevantMemories:
+                memoryContext = "\n\n📝 Ngữ cảnh từ quá khứ:\n"
+                for mem in relevantMemories:
+                    emotion = mem.get('emotional_context', {}).get('emotion', 'unknown')
+                    memoryContext += f"- {mem['content']} (cảm xúc: {emotion})\n"
+                logger.info(f"🧠 Found {len(relevantMemories)} memories")
+        
+        # ============================================================
         # PHASE 3: Stream AI Response
         # ============================================================
         
@@ -197,6 +222,10 @@ async def streamChatResponse(
             userContext={"language": user.language},
             emotionState=emotionState
         )
+        
+        # Add memory context to system prompt
+        if memoryContext:
+            systemPrompt += memoryContext
         
         messages = formatMessagesForAI(contextMessages, systemPrompt)
         messages.append({
@@ -303,6 +332,43 @@ async def streamChatResponse(
             emotionState=emotionData['emotion_state'],
             energyLevel=emotionData['energy_level']
         )
+        
+        # ============================================================
+        # PHASE 4.5: Save Important Conversations (OPTIMIZED)
+        # ============================================================
+        
+        # Save to semantic memory if:
+        # 1. Conversation has >= 7 messages (increased threshold)
+        # 2. Emotion is strong (not neutral/calm)
+        # 3. Has themes detected
+        shouldSaveMemory = (
+            len(contextMessages) >= 7 and
+            emotionData.get("emotion_state") not in ["neutral", "calm"] and
+            len(emotionData.get("detected_themes", [])) > 0
+        )
+        
+        if shouldSaveMemory:
+            try:
+                memoryService = MemoryService(db)
+                recentMessages = contextMessages[-5:] + [
+                    {"role": "user", "content": request.message},
+                    {"role": "assistant", "content": full_content}
+                ]
+                
+                await memoryService.saveConversationSummary(
+                    userId=userId,
+                    conversationId=conversation.id,
+                    messages=[
+                        {"role": msg.role if hasattr(msg, 'role') else msg.get('role'),
+                         "content": msg.content if hasattr(msg, 'content') else msg.get('content')}
+                        for msg in recentMessages
+                    ],
+                    emotionState=emotionData["emotion_state"],
+                    themes=emotionData.get("detected_themes", [])
+                )
+                logger.info("💾 Saved to memory")
+            except Exception as e:
+                logger.error(f"❌ Memory save failed: {e}")
         
         # Commit transaction
         await service.db.commit()
