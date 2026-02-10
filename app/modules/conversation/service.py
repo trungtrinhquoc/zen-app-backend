@@ -74,7 +74,7 @@ class ConversationService:
             age = (datetime.utcnow() - cached_at).total_seconds()
             
             if age < _CACHE_TTL:
-                logger.info(f"⚡ User cache HIT (age: {age:.0f}s)")
+                #logger.info(f"⚡ User cache HIT (age: {age:.0f}s)")
                 return user
             else:
                 logger.info(f"⏰ User cache EXPIRED (age: {age:.0f}s)")
@@ -132,7 +132,7 @@ class ConversationService:
                 age = (datetime.utcnow() - cached_at).total_seconds()
                 
                 if age < _CACHE_TTL:
-                    logger.info(f"⚡ Conversation cache HIT (age: {age:.0f}s)")
+                    #logger.info(f"⚡ Conversation cache HIT (age: {age:.0f}s)")
                     return conversation
                 else:
                     logger.info(f"⏰ Conversation cache EXPIRED (age: {age:.0f}s)")
@@ -637,6 +637,22 @@ class ConversationService:
                 assistantMessage.content += f"\n\n{suggestionMsg}"
                 logger.info(f"💡 Suggested: {activity['activity_type']}")
 
+        # 🆕 Auto-generate title for new conversations (first USER message)
+        # Count user messages in context (exclude current one being saved)
+        user_message_count = sum(1 for msg in contextMessages if msg.role == "user")
+        
+        # If this is the first user message and title is still default
+        if user_message_count == 0 and conversation.title == "New Chat":
+            # Generate title from first user message (max 50 chars)
+            title = request.message[:50].strip()
+            if len(request.message) > 50:
+                title += "..."
+            
+            # CRITICAL: Merge conversation into session
+            conversation = await self.db.merge(conversation)
+            conversation.title = title
+            logger.info(f"📝 Auto-generated title: {title}")
+
         # ⚡ ADD ALL AT ONCE
         self.db.add_all([userMessage, assistantMessage])
 
@@ -807,3 +823,181 @@ class ConversationService:
             }
             
             return emotionData, content, metadata
+    
+    
+    # ============================================================
+    # CONVERSATION HISTORY METHODS
+    # ============================================================
+    
+    async def listUserConversations(
+        self,
+        userId: UUID,
+        limit: int = 20,
+        offset: int = 0
+    ) -> Tuple[List[Conversation], int]:
+        """
+        Lấy danh sách conversations của user với pagination
+        
+        Args:
+            userId: User ID
+            limit: Số conversations tối đa (default: 20)
+            offset: Offset cho pagination (default: 0)
+        
+        Returns:
+            Tuple[List[Conversation], int]: (conversations, total_count)
+        
+        Flow:
+            1. Query conversations của user
+            2. Order by started_at DESC (mới nhất trước)
+            3. Apply pagination (limit, offset)
+            4. Return conversations + total count
+        """
+        # Count total conversations
+        count_stmt = select(func.count(Conversation.id)).where(
+            Conversation.user_id == userId,
+            Conversation.deleted_at.is_(None)  # Exclude soft-deleted
+        )
+        count_result = await self.db.execute(count_stmt)
+        total_count = count_result.scalar()
+        
+        # Get conversations with pagination
+        stmt = select(Conversation).where(
+            Conversation.user_id == userId,
+            Conversation.deleted_at.is_(None)
+        ).order_by(
+            desc(Conversation.started_at)
+        ).limit(limit).offset(offset)
+        
+        result = await self.db.execute(stmt)
+        conversations = result.scalars().all()
+        
+        logger.info(f"📋 Listed {len(conversations)} conversations (total: {total_count})")
+        return list(conversations), total_count
+    
+    
+    async def getConversationDetail(
+        self,
+        conversationId: UUID,
+        userId: UUID
+    ) -> Conversation:
+        """
+        Lấy chi tiết conversation với tất cả messages
+        
+        Args:
+            conversationId: Conversation ID
+            userId: User ID (để verify ownership)
+        
+        Returns:
+            Conversation object với messages loaded
+        
+        Raises:
+            NotFoundException: Nếu conversation không tồn tại hoặc không thuộc user
+        """
+        stmt = select(Conversation).where(
+            Conversation.id == conversationId,
+            Conversation.user_id == userId,
+            Conversation.deleted_at.is_(None)
+        )
+        result = await self.db.execute(stmt)
+        conversation = result.scalar_one_or_none()
+        
+        if not conversation:
+            raise NotFoundException(f"Conversation {conversationId} not found")
+        
+        logger.info(f"📖 Loaded conversation detail: {conversationId}")
+        return conversation
+    
+    
+    async def deleteConversation(
+        self,
+        conversationId: UUID,
+        userId: UUID
+    ) -> bool:
+        """
+        Xóa conversation (soft delete)
+        
+        Args:
+            conversationId: Conversation ID
+            userId: User ID (để verify ownership)
+        
+        Returns:
+            bool: True nếu xóa thành công
+        
+        Raises:
+            NotFoundException: Nếu conversation không tồn tại hoặc không thuộc user
+        """
+        stmt = select(Conversation).where(
+            Conversation.id == conversationId,
+            Conversation.user_id == userId,
+            Conversation.deleted_at.is_(None)
+        )
+        result = await self.db.execute(stmt)
+        conversation = result.scalar_one_or_none()
+        
+        if not conversation:
+            raise NotFoundException(f"Conversation {conversationId} not found")
+        
+        # Soft delete
+        conversation.deleted_at = datetime.utcnow()
+        await self.db.commit()
+        
+        # Invalidate cache
+        cache_key = str(conversationId)
+        if cache_key in _CONVERSATION_CACHE:
+            del _CONVERSATION_CACHE[cache_key]
+        
+        logger.info(f"🗑️ Deleted conversation: {conversationId}")
+        return True
+    
+    
+    async def updateConversation(
+        self,
+        conversationId: UUID,
+        userId: UUID,
+        title: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> Conversation:
+        """
+        Cập nhật conversation metadata
+        
+        Args:
+            conversationId: Conversation ID
+            userId: User ID (để verify ownership)
+            title: New title (optional)
+            status: New status (optional): 'active', 'ended', 'archived'
+        
+        Returns:
+            Updated Conversation object
+        
+        Raises:
+            NotFoundException: Nếu conversation không tồn tại hoặc không thuộc user
+        """
+        stmt = select(Conversation).where(
+            Conversation.id == conversationId,
+            Conversation.user_id == userId,
+            Conversation.deleted_at.is_(None)
+        )
+        result = await self.db.execute(stmt)
+        conversation = result.scalar_one_or_none()
+        
+        if not conversation:
+            raise NotFoundException(f"Conversation {conversationId} not found")
+        
+        # Update fields
+        if title is not None:
+            conversation.title = title
+        if status is not None:
+            conversation.status = status
+            if status == 'ended':
+                conversation.ended_at = datetime.utcnow()
+        
+        conversation.updated_at = datetime.utcnow()
+        await self.db.commit()
+        
+        # Invalidate cache
+        cache_key = str(conversationId)
+        if cache_key in _CONVERSATION_CACHE:
+            _CONVERSATION_CACHE[cache_key] = (conversation, datetime.utcnow())
+        
+        logger.info(f"✏️ Updated conversation: {conversationId}")
+        return conversation

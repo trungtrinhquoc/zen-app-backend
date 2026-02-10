@@ -99,11 +99,11 @@ class OpenRouterService:
         try:
             start_time = time.time()
             
-            logger.info(f"🤖 OpenRouter [{call_type}] - Starting...")
-            logger.info(f"   Model: {self.model}")
-            logger.info(f"   Messages: {len(messages)}")
-            logger.info(f"   Max tokens: {maxTokens}")
-            logger.info(f"   Temperature: {temperature}")
+            # logger.info(f"🤖 OpenRouter [{call_type}] - Starting...")
+            # logger.info(f"   Model: {self.model}")
+            # logger.info(f"   Messages: {len(messages)}")
+            # logger.info(f"   Max tokens: {maxTokens}")
+            # logger.info(f"   Temperature: {temperature}")
             
             # Call OpenRouter via OpenAI SDK
             response = await self.client.chat.completions.create(
@@ -197,11 +197,11 @@ class OpenRouterService:
         start_time = time.time()
         call_type = "STREAMING"
         
-        logger.info(f"🤖 OpenRouter [{call_type}] - Starting...")
-        logger.info(f"   Model: {self.model}")
-        logger.info(f"   Messages: {len(messages)}")
-        logger.info(f"   Max tokens: {maxTokens}")
-        logger.info(f"   Temperature: {temperature}")
+        # logger.info(f"🤖 OpenRouter [{call_type}] - Starting...")
+        # logger.info(f"   Model: {self.model}")
+        # logger.info(f"   Messages: {len(messages)}")
+        # logger.info(f"   Max tokens: {maxTokens}")
+        # logger.info(f"   Temperature: {temperature}")
         
         try:
             response = await self.client.chat.completions.create(
@@ -209,7 +209,7 @@ class OpenRouterService:
                 messages=messages,
                 temperature=temperature,
                 max_tokens=maxTokens,
-                stream=True  # Enable streaming
+                stream=True 
             )
             
             total_content = ""
