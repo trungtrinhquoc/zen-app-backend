@@ -83,20 +83,32 @@ class ChatRequest(BaseModel):
         True,
         description="Include chat history for context"
     )
+    
+    isVoiceInput: bool = Field(
+        False,
+        description="Flag to indicate if message came from voice input"
+    )
+    voiceDuration: Optional[float] = Field(
+        None,
+        description="Duration of voice recording in seconds (for analytics)"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "userId": "25f1e353-566d-4ef2-8927-32c9fddada42",
+                "message": "Hôm nay tôi cảm thấy hơi buồn",
+                "conversationId": None,
+                "includeContext": True,
+                "isVoiceInput": False,
+                "voiceDuration": 0.0
+            }
+        }
+    )
 
 
 class ChatResponse(BaseModel):
-    """
-    Chat response schema
-    
-    Giải thích:
-    - conversation_id: Để frontend track conversation
-    - user_message: Message user vừa gửi (đã có emotion analysis)
-    - assistant_message: AI response
-    - context_used: Số messages đã dùng làm context
-    - suggestion: Activity suggestion (nếu có)
-    - Output as camelCase JSON
-    """
+
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True
@@ -128,21 +140,5 @@ class ConversationResponse(BaseModel):
 
 
 class ConversationDetailResponse(ConversationResponse):
-    """Conversation detail với messages"""
     messages: List[MessageResponse]
 
-
-"""
-Giải thích Pydantic:
-- BaseModel: Base class cho schemas
-- Field: Define field với validation
-- Optional[T]: Field có thể None
-- Literal["a", "b"]: Field chỉ accept exact values
-- model_config = {"from_attributes": True}
-  → Cho phép parse từ ORM objects (SQLAlchemy models)
-  
-Example:
-    message = Message(role="user", content="Hello")
-    response = MessageResponse.model_validate(message)
-    # response là dict có thể serialize thành JSON
-"""
