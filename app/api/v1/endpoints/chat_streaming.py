@@ -87,7 +87,7 @@ async def streamChatResponse(
         # ============================================================
         
         if isSimplePattern(request.message):
-            logger.info("⚡ FAST PATH (Streaming): Simple pattern")
+            #logger.info("⚡ FAST PATH (Streaming): Simple pattern")
             
             aiContent, metadata = getSimpleResponse(request.message)
             emotionData = {
@@ -114,7 +114,12 @@ async def streamChatResponse(
                 role="user",
                 content=request.message,
                 sequenceNumber=seqNum,
-                emotionData=emotionData
+                emotionData=emotionData,
+                metadata={
+                    "is_voice_input": request.isVoiceInput,
+                    "voice_duration": request.voiceDuration,
+                    "content_type": "voice" if request.isVoiceInput else "text"
+                }
             )
             
             # Save assistant message
@@ -256,7 +261,7 @@ async def streamChatResponse(
         # Get last assistant message for suggestion logic
         lastAssistantMsg = ""
         for msg in reversed(contextMessages):
-            if msg.role == "assistant":  # Direct attribute access for SQLAlchemy object
+            if msg.role == "assistant": 
                 lastAssistantMsg = msg.content
                 break
         
@@ -286,13 +291,13 @@ async def streamChatResponse(
             request.message,
             conversationTurnCount=seqNum,
             lastAssistantMessage=lastAssistantMsg,
-            context=context  # Pass context to check if already suggested
+            context=context  
         ):
             activity = getSuggestedActivity(
                 emotionData, 
                 userMessage=request.message,
                 userLanguage=user.language or "vi",
-                context=context  # Pass context for smart matching
+                context=context  
             )
             if activity:
                 suggestion = activity
@@ -312,7 +317,7 @@ async def streamChatResponse(
             emotionData=emotionData
         )
         
-        # Save assistant message (with suggestion if any)
+        # Save assistant message 
         await service.saveMessage(
             conversationId=conversation.id,
             userId=userId,
@@ -329,11 +334,9 @@ async def streamChatResponse(
             energyLevel=emotionData['energy_level']
         )
         
-        # 🆕 Auto-generate title for new conversations (first USER message)
-        # Count user messages in context (exclude current one)
+        # 🆕 Auto-generate title for new conversations 
         user_message_count = sum(1 for msg in contextMessages if msg.role == "user")
         
-        # DEBUG: Log the check conditions
         logger.info(f"🔍 Title check: user_count={user_message_count}, current_title='{conversation.title}', seqNum={seqNum}")
         
         # If this is the first user message (user_message_count == 0) and title is still default

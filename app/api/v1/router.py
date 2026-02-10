@@ -2,7 +2,7 @@
 API v1 Main Router
 """
 from fastapi import APIRouter
-from app.api.v1.endpoints import health, chat, chat_streaming, conversations
+from app.api.v1.endpoints import health, chat, chat_streaming, conversations, voice
 
 apiRouter = APIRouter()
 
@@ -30,4 +30,11 @@ apiRouter.include_router(
     conversations.router,
     prefix="/conversations",
     tags=["Conversations"]
+)
+
+# Include voice endpoints
+apiRouter.include_router(
+    voice.router,
+    prefix="/voice",
+    tags=["Voice"]
 )

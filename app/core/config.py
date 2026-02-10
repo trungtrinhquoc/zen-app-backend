@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from typing import List, Optional
 
 
 class Settings(BaseSettings):
@@ -17,13 +17,17 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str
     DATABASE_URL: str
     
+    # Google Cloud
+    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
+    GOOGLE_CLOUD_PROJECT: Optional[str] = None
+    
     # OpenAI
     OPENROUTER_API_KEY: str
     OPENROUTER_MODEL: str = "openai/gpt-4o-mini"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     
-    # Groq
-    GROQ_API_KEY: str | None = None
+    # Voice Settings (using Google Cloud STT)
+    STT_LANGUAGE: str = "vi-VN"  # Vietnamese
     
     # Security
     SECRET_KEY: str

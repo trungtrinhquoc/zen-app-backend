@@ -10,13 +10,6 @@ from app.utils.exceptions import OpenAIException
 
 
 class OpenRouterService:
-    """
-    OpenRouter API Service using OpenAI SDK
-    
-    OpenRouter tương thích với OpenAI API format,
-    nên ta dùng AsyncOpenAI client với custom base_url
-    """
-    
     def __init__(self):
         """
         Initialize OpenRouter service
@@ -38,7 +31,7 @@ class OpenRouterService:
                 api_key=self.api_key,
                 base_url="https://openrouter.ai/api/v1"
             )
-            logger.info(f"✅ OpenRouter client initialized: {self.model}")
+            #logger.info(f"✅ OpenRouter client initialized: {self.model}")
     
     
     async def chat(
@@ -47,26 +40,6 @@ class OpenRouterService:
         temperature: float = 0.7,
         maxTokens: int = 1000
     ) -> Dict:
-        """
-        Call OpenRouter API using OpenAI SDK
-        
-        Args:
-            messages: List of message dicts với role & content
-            temperature: Sampling temperature (0-2)
-            maxTokens: Max tokens to generate
-        
-        Returns:
-            {
-                "content": str,
-                "model": str,
-                "promptTokens": int,
-                "completionTokens": int,
-                "responseTimeMs": int
-            }
-        
-        Raises:
-            OpenAIException: If API call fails
-        """
         import time
         
         # ============================================================

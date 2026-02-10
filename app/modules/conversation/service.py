@@ -80,7 +80,7 @@ class ConversationService:
                 logger.info(f"⏰ User cache EXPIRED (age: {age:.0f}s)")
         
         # Cache miss or expired - query DB
-        logger.info(f"💾 User cache MISS - querying DB")
+        #logger.info(f"💾 User cache MISS - querying DB")
 
         from sqlalchemy.dialects.postgresql import insert
     

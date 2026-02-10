@@ -145,6 +145,7 @@ env.bak/
 venv.bak/
 .env.local
 
+story-generator-479404-ef2e8236954d.json
 # Spyder project settings
 .spyderproject
 .spyproject
