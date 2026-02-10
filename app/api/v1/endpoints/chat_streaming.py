@@ -189,43 +189,16 @@ async def streamChatResponse(
         emotionState = emotionData.get("emotion_state", "neutral")
         
         # ============================================================
-        # PHASE 2.5: Search Relevant Memories (OPTIMIZED)
+        # PHASE 2.5 + 3: PARALLEL Memory Search + AI Response (OPTIMIZED)
         # ============================================================
         
-        # Only search if conversation has enough context
-        memoryContext = ""
-        if len(contextMessages) >= 3:
-            memoryService = MemoryService(db)
-            relevantMemories = await memoryService.searchSemanticMemories(
-                userId=userId,
-                query=request.message,
-                limit=5,  # Increased from 3
-                minImportance=0.2,  # Lowered from 0.3
-                minSimilarity=0.60  # Lowered from 0.65 for better recall
-            )
-            
-            # Build memory context for system prompt
-            if relevantMemories:
-                memoryContext = "\n\n📝 Ngữ cảnh từ quá khứ:\n"
-                for mem in relevantMemories:
-                    emotion = mem.get('emotional_context', {}).get('emotion', 'unknown')
-                    memoryContext += f"- {mem['content']} (cảm xúc: {emotion})\n"
-                logger.info(f"🧠 Found {len(relevantMemories)} memories")
+        logger.info("🔄 PHASE 3 (Streaming): AI response + Memory search (parallel)...")
         
-        # ============================================================
-        # PHASE 3: Stream AI Response
-        # ============================================================
-        
-        logger.info("🔄 PHASE 3 (Streaming): AI response...")
-        
+        # Prepare system prompt
         systemPrompt = getSystemPrompt(
             userContext={"language": user.language},
             emotionState=emotionState
         )
-        
-        # Add memory context to system prompt
-        if memoryContext:
-            systemPrompt += memoryContext
         
         messages = formatMessagesForAI(contextMessages, systemPrompt)
         messages.append({
@@ -233,7 +206,21 @@ async def streamChatResponse(
             "content": request.message
         })
         
-        # Stream chunks
+        # ⚡ PARALLEL: Start memory search in background (don't await)
+        memory_task = None
+        if len(contextMessages) >= 3:
+            memoryService = MemoryService(db)
+            memory_task = asyncio.create_task(
+                memoryService.searchSemanticMemories(
+                    userId=userId,
+                    query=request.message,
+                    limit=5,
+                    minImportance=0.2,
+                    minSimilarity=0.60
+                )
+            )
+        
+        # ⚡ PARALLEL: Stream AI response immediately (don't wait for memory)
         full_content = ""
         async for chunk in openRouterService.chatStreaming(
             messages=messages,
@@ -242,6 +229,15 @@ async def streamChatResponse(
         ):
             full_content += chunk
             yield format_sse("chunk", {"content": chunk})
+        
+        # Memory search should be done by now (or we wait briefly)
+        if memory_task:
+            try:
+                relevantMemories = await memory_task
+                if relevantMemories:
+                    logger.info(f"🧠 Found {len(relevantMemories)} memories (searched in parallel)")
+            except Exception as e:
+                logger.error(f"❌ Memory search failed: {e}")
         # ============================================================
         # PHASE 4: Save to Database
         # ============================================================
@@ -332,6 +328,27 @@ async def streamChatResponse(
             emotionState=emotionData['emotion_state'],
             energyLevel=emotionData['energy_level']
         )
+        
+        # 🆕 Auto-generate title for new conversations (first USER message)
+        # Count user messages in context (exclude current one)
+        user_message_count = sum(1 for msg in contextMessages if msg.role == "user")
+        
+        # DEBUG: Log the check conditions
+        logger.info(f"🔍 Title check: user_count={user_message_count}, current_title='{conversation.title}', seqNum={seqNum}")
+        
+        # If this is the first user message (user_message_count == 0) and title is still default
+        if user_message_count == 0 and conversation.title == "New Chat":
+            # Generate title from first user message (max 50 chars)
+            title = request.message[:50].strip()
+            if len(request.message) > 50:
+                title += "..."
+            
+            # CRITICAL: Merge conversation into session (handles both attached and detached objects)
+            conversation = await db.merge(conversation)
+            conversation.title = title
+            logger.info(f"📝 Auto-generated title: {title}")
+        else:
+            logger.info(f"⏭️  Skipping title generation (user_count={user_message_count}, title='{conversation.title}')")
         
         # ============================================================
         # PHASE 4.5: Save Important Conversations (OPTIMIZED)
