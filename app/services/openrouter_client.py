@@ -38,7 +38,8 @@ class OpenRouterService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        maxTokens: int = 1000
+        maxTokens: int = 1000,
+        model: str = None  # 🆕 Allow override model per request
     ) -> Dict:
         import time
         
@@ -52,6 +53,9 @@ class OpenRouterService:
                 "OpenRouter API key not configured. "
                 "Please set OPENROUTER_API_KEY in .env file"
             )
+        
+        # Use specified model or fall back to default
+        selected_model = model or self.model
         
         # ============================================================
         # DETERMINE CALL TYPE
@@ -73,14 +77,14 @@ class OpenRouterService:
             start_time = time.time()
             
             # logger.info(f"🤖 OpenRouter [{call_type}] - Starting...")
-            # logger.info(f"   Model: {self.model}")
+            # logger.info(f"   Model: {selected_model}")
             # logger.info(f"   Messages: {len(messages)}")
             # logger.info(f"   Max tokens: {maxTokens}")
             # logger.info(f"   Temperature: {temperature}")
             
             # Call OpenRouter via OpenAI SDK
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=selected_model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=maxTokens,
@@ -117,7 +121,7 @@ class OpenRouterService:
             
             return {
                 "content": content,
-                "model": self.model,
+                "model": selected_model,  # Return actual model used
                 "promptTokens": prompt_tokens,
                 "completionTokens": completion_tokens,
                 "responseTimeMs": response_time
@@ -144,7 +148,8 @@ class OpenRouterService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        maxTokens: int = 1000
+        maxTokens: int = 1000,
+        model: str = None  # 🆕 Allow override model per request
     ):
         """
         Stream AI response chunk by chunk (for real-time display)
@@ -153,6 +158,7 @@ class OpenRouterService:
             messages: List of message dicts
             temperature: Sampling temperature
             maxTokens: Max tokens to generate
+            model: Optional model override
         
         Yields:
             str: Content chunks as they arrive
@@ -167,18 +173,21 @@ class OpenRouterService:
             logger.error("❌ OpenRouter client not initialized")
             raise OpenAIException("OpenRouter API key not configured")
         
+        # Use specified model or fall back to default
+        selected_model = model or self.model
+        
         start_time = time.time()
         call_type = "STREAMING"
         
         # logger.info(f"🤖 OpenRouter [{call_type}] - Starting...")
-        # logger.info(f"   Model: {self.model}")
+        # logger.info(f"   Model: {selected_model}")
         # logger.info(f"   Messages: {len(messages)}")
         # logger.info(f"   Max tokens: {maxTokens}")
         # logger.info(f"   Temperature: {temperature}")
         
         try:
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=selected_model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=maxTokens,

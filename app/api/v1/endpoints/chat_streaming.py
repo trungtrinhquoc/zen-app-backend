@@ -1,9 +1,4 @@
-"""
-Streaming Chat Endpoint
-Handles real-time streaming responses using Server-Sent Events (SSE)
-"""
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID, uuid4
@@ -39,7 +34,8 @@ def format_sse(event: str, data: dict) -> str:
 async def streamChatResponse(
     userId: UUID,
     request: ChatRequest,
-    db: AsyncSession
+    db: AsyncSession,
+    background_tasks: BackgroundTasks
 ):
     """
     Stream chat response chunk by chunk
@@ -60,27 +56,48 @@ async def streamChatResponse(
         logger.info("🔄 PHASE 1 (Streaming): Setup...")
         phase1_start = time.time()
         
-        step_start = time.time()
-        user = await service.getOrCreateUser(userId)
-        step_time = (time.time() - step_start) * 1000
-        logger.info(f"⏱️  Step 1 (Get user): {step_time:.0f}ms")
+        # 1. Prepare tasks
+        task_user = service.getOrCreateUser(userId)
         
-        step_start = time.time()
-        conversation = await service.getOrCreateConversation(
-            userId=userId,
-            conversationId=request.conversationId
-        )
-        step_time = (time.time() - step_start) * 1000
-        logger.info(f"⏱️  Step 2 (Get/Create conversation): {step_time:.0f}ms")
+        # Variables to hold results
+        conversation = None
+        contextMessages = []
         
-        step_start = time.time()
-        contextMessages = await service.getConversationContext(conversation.id)
+        # Logic: If client sends conversationId, we can fetch context in parallel
+        if request.conversationId:
+            task_conv = service.getOrCreateConversation(userId, conversationId=request.conversationId)
+            task_context = service.getConversationContext(request.conversationId)
+            
+            # Run 3 tasks concurrently
+            results = await asyncio.gather(task_user, task_conv, task_context, return_exceptions=True)
+            
+            # Handle User result
+            if isinstance(results[0], Exception): raise results[0]
+            user = results[0]
+            
+            # Handle Conversation result
+            if isinstance(results[1], Exception): raise results[1]
+            conversation = results[1]
+            
+            # Handle Context result (log warning on error, default to empty)
+            if isinstance(results[2], Exception):
+                logger.warning(f"⚠️ Context load error: {results[2]}")
+                contextMessages = []
+            else:
+                contextMessages = results[2]
+                
+        else:
+            # New Chat Case (no ID): Sequential flow required
+            # 1. Get User
+            user = await task_user
+            # 2. Create Conversation
+            conversation = await service.getOrCreateConversation(userId, None)
+            # 3. Context is empty for new chat
+            contextMessages = []
+
         contextUsed = len(contextMessages)
-        step_time = (time.time() - step_start) * 1000
-        logger.info(f"⏱️  Step 3 (Load context): {step_time:.0f}ms (messages: {contextUsed})")
-        
         phase1_elapsed = (time.time() - phase1_start) * 1000
-        logger.info(f"✅ Phase 1 Complete: {phase1_elapsed:.0f}ms")
+        logger.info(f"✅ Phase 1 Complete: {phase1_elapsed:.0f}ms (Parallel) - used {contextUsed} msgs")
         
         # ============================================================
         # FAST PATH: Simple patterns
@@ -212,45 +229,29 @@ async def streamChatResponse(
         })
         
         # ⚡ PARALLEL: Start memory search in background (don't await)
-        memory_task = None
-        if len(contextMessages) >= 3:
-            memoryService = MemoryService(db)
-            memory_task = asyncio.create_task(
-                memoryService.searchSemanticMemories(
-                    userId=userId,
-                    query=request.message,
-                    limit=5,
-                    minImportance=0.2,
-                    minSimilarity=0.60
-                )
-            )
+        # NOTE: Memory search is now part of saveChatTurn (Phase 4.5) which runs in background.
         
         # ⚡ PARALLEL: Stream AI response immediately (don't wait for memory)
+        from app.core.config import settings
         full_content = ""
         async for chunk in openRouterService.chatStreaming(
             messages=messages,
             temperature=0.8,
-            maxTokens=800
+            maxTokens=800,
+            model=settings.OPENROUTER_CHAT_MODEL  # 🚀 Use fast chat model
         ):
             full_content += chunk
             yield format_sse("chunk", {"content": chunk})
         
-        # Memory search should be done by now (or we wait briefly)
-        if memory_task:
-            try:
-                relevantMemories = await memory_task
-                if relevantMemories:
-                    logger.info(f"🧠 Found {len(relevantMemories)} memories (searched in parallel)")
-            except Exception as e:
-                logger.error(f"❌ Memory search failed: {e}")
         # ============================================================
-        # PHASE 4: Save to Database
+        # PHASE 4: Background Save
         # ============================================================
         
-        logger.info("🔄 PHASE 4 (Streaming): Saving to DB...")
+        logger.info("🔄 PHASE 4 (Streaming): Scheduling background save...")
         
+        # Prepare metadata
         metadata = {
-            "model": "openai/gpt-4o-mini",
+            "model": settings.OPENROUTER_CHAT_MODEL,
             "promptTokens": 0,
             "completionTokens": 0,
             "responseTimeMs": 0
@@ -258,33 +259,27 @@ async def streamChatResponse(
         
         seqNum = len(contextMessages) + 1
         
-        # Get last assistant message for suggestion logic
+        # Suggestion Logic
         lastAssistantMsg = ""
         for msg in reversed(contextMessages):
             if msg.role == "assistant": 
                 lastAssistantMsg = msg.content
                 break
         
-        # Create conversation context for smart suggestions
         context = ConversationContext(
             turn_count=seqNum,
             last_assistant_message=lastAssistantMsg
         )
         
-        # Rebuild context state: check if we already suggested in this conversation
-        # by looking for suggestion metadata in previous assistant messages
+        # Rebuild context state
         for msg in contextMessages:
             if msg.role == "assistant" and msg.metadata:
-                # Check if this message had a suggestion
                 if isinstance(msg.metadata, dict) and msg.metadata.get("suggestion"):
                     context.has_suggested_in_session = True
                     suggested_type = msg.metadata["suggestion"].get("activity_type")
                     if suggested_type:
                         context.suggested_activities.append(suggested_type)
         
-        logger.info(f"📊 Context: turn={seqNum}, has_suggested={context.has_suggested_in_session}, suggested={context.suggested_activities}")
-        
-        # Check suggestion BEFORE saving
         suggestion = None
         if shouldSuggestActivity(
             emotionData, 
@@ -305,95 +300,25 @@ async def streamChatResponse(
                 full_content += f"\n\n{suggestionMsg}"
                 logger.info(f"💡 Suggested: {activity['activity_type']}")
         
-        
-        
-        # Save user message
-        await service.saveMessage(
+        # Schedule Background Task
+        # IMPORTANT: We pass copies of data or primitive types to avoid DetachedInstanceError
+        background_tasks.add_task(
+            service.saveChatTurn,
             conversationId=conversation.id,
             userId=userId,
-            role="user",
-            content=request.message,
-            sequenceNumber=seqNum,
-            emotionData=emotionData
+            requestMessage=request.message,
+            aiContent=full_content,
+            seqNum=seqNum,
+            emotionData=emotionData,
+            metadata=metadata,
+            contextMessages=contextMessages, 
+            suggestion=suggestion,
+            conversationTitle=conversation.title
         )
-        
-        # Save assistant message 
-        await service.saveMessage(
-            conversationId=conversation.id,
-            userId=userId,
-            role="assistant",
-            content=full_content,
-            sequenceNumber=seqNum + 1,
-            metadata=metadata
-        )
-        
-        # Update emotion progression
-        await service.updateEmotionProgression(
-            conversationId=conversation.id,
-            emotionState=emotionData['emotion_state'],
-            energyLevel=emotionData['energy_level']
-        )
-        
-        # 🆕 Auto-generate title for new conversations 
-        user_message_count = sum(1 for msg in contextMessages if msg.role == "user")
-        
-        logger.info(f"🔍 Title check: user_count={user_message_count}, current_title='{conversation.title}', seqNum={seqNum}")
-        
-        # If this is the first user message (user_message_count == 0) and title is still default
-        if user_message_count == 0 and conversation.title == "New Chat":
-            # Generate title from first user message (max 50 chars)
-            title = request.message[:50].strip()
-            if len(request.message) > 50:
-                title += "..."
-            
-            # CRITICAL: Merge conversation into session (handles both attached and detached objects)
-            conversation = await db.merge(conversation)
-            conversation.title = title
-            logger.info(f"📝 Auto-generated title: {title}")
-        else:
-            logger.info(f"⏭️  Skipping title generation (user_count={user_message_count}, title='{conversation.title}')")
-        
-        # ============================================================
-        # PHASE 4.5: Save Important Conversations (OPTIMIZED)
-        # ============================================================
-        
-        # Save to semantic memory if:
-        # 1. Conversation has >= 7 messages (increased threshold)
-        # 2. Emotion is strong (not neutral/calm)
-        # 3. Has themes detected
-        shouldSaveMemory = (
-            len(contextMessages) >= 7 and
-            emotionData.get("emotion_state") not in ["neutral", "calm"] and
-            len(emotionData.get("detected_themes", [])) > 0
-        )
-        
-        if shouldSaveMemory:
-            try:
-                memoryService = MemoryService(db)
-                recentMessages = contextMessages[-5:] + [
-                    {"role": "user", "content": request.message},
-                    {"role": "assistant", "content": full_content}
-                ]
-                
-                await memoryService.saveConversationSummary(
-                    userId=userId,
-                    conversationId=conversation.id,
-                    messages=[
-                        {"role": msg.role if hasattr(msg, 'role') else msg.get('role'),
-                         "content": msg.content if hasattr(msg, 'content') else msg.get('content')}
-                        for msg in recentMessages
-                    ],
-                    emotionState=emotionData["emotion_state"],
-                    themes=emotionData.get("detected_themes", [])
-                )
-                logger.info("💾 Saved to memory")
-            except Exception as e:
-                logger.error(f"❌ Memory save failed: {e}")
-        
-        # Commit transaction
-        await service.db.commit()
-        
-        # Send complete metadata matching ChatResponse schema
+
+        logger.info("✅ Background save scheduled.")
+
+        # Send metadata
         from datetime import datetime
         metadata_response = {
             "conversationId": str(conversation.id),
@@ -410,7 +335,7 @@ async def streamChatResponse(
                 "detectedThemes": emotionData['detected_themes']
             },
             "assistantMessage": {
-                "id": str(uuid4()),  # Generate temp ID for display
+                "id": str(uuid4()),  
                 "role": "assistant",
                 "content": full_content,
                 "contentType": "text",
@@ -436,6 +361,7 @@ async def streamChatResponse(
 @router.post("/stream")
 async def chatStream(
     request: ChatRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(getDbSession)
 ):
     """
@@ -458,7 +384,7 @@ async def chatStream(
     logger.info("================================================================================")
     
     return StreamingResponse(
-        streamChatResponse(request.userId, request, db),
+        streamChatResponse(request.userId, request, db, background_tasks),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -366,11 +366,13 @@ class ConversationService:
         
         logger.info(f"🤖 Generating AI response: {len(messages)} messages, emotion={emotionState}")
         
-        # Call AI
+        # Call AI with CHAT_MODEL (optimized for conversational responses)
+        from app.core.config import settings
         result = await openRouterService.chat(
             messages=messages,
             temperature=0.8,  
-            maxTokens=800
+            maxTokens=800,
+            model=settings.OPENROUTER_CHAT_MODEL  # 🚀 Use fast chat model
         )
         
         metadata = {
@@ -430,6 +432,131 @@ class ConversationService:
         logger.info(f"✅ Sent proactive greeting: {greetingContent}")
         
         return message
+
+    async def saveChatTurn(
+        self,
+        conversationId: UUID,
+        userId: UUID,
+        requestMessage: str,
+        aiContent: str,
+        seqNum: int,
+        emotionData: dict,
+        metadata: dict,
+        contextMessages: List[Message],
+        suggestion: Optional[dict],
+        conversationTitle: str
+    ):
+        """
+        Background Task: Save chat turn to DB and handle side effects
+        
+        Operations:
+        1. Save User Message
+        2. Save Assistant Message
+        3. Update Emotion Progression
+        4. Auto-generate Title (if needed)
+        5. Save Semantic Memory (if needed)
+        """
+        try:
+            logger.info(f"💾 Background Save: Saving turn {seqNum} for conv {conversationId}")
+            
+            # 1. Save User Message
+            userMessage = Message(
+                conversation_id=conversationId,
+                user_id=userId,
+                role="user",
+                content=requestMessage,
+                sequence_number=seqNum,
+                emotion_state=emotionData.get("emotion_state"),
+                energy_level=emotionData.get("energy_level"),
+                urgency_level=emotionData.get("urgency_level"),
+                detected_themes=emotionData.get("detected_themes", [])
+            )
+            self.db.add(userMessage)
+            
+            # 2. Save Assistant Message
+            assistantMessage = Message(
+                conversation_id=conversationId,
+                user_id=userId,
+                role="assistant",
+                content=aiContent,
+                sequence_number=seqNum + 1,
+                model_used=metadata.get("model"),
+                prompt_tokens=metadata.get("promptTokens"),
+                completion_tokens=metadata.get("completionTokens"),
+                response_time_ms=metadata.get("responseTimeMs"),
+                # Store suggestion in metadata if present
+                metadata={"suggestion": suggestion} if suggestion else None
+            )
+            self.db.add(assistantMessage)
+            
+            # 3. Update Emotion Progression
+            # Need to fetch conversation to update JSONB
+            stmt = select(Conversation).where(Conversation.id == conversationId)
+            result = await self.db.execute(stmt)
+            conversation = result.scalar_one()
+            
+            progression = conversation.emotion_progression or []
+            progression.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "emotion": emotionData.get("emotion_state"),
+                "energy": emotionData.get("energy_level")
+            })
+            conversation.emotion_progression = progression
+            
+            # Update dominant emotion
+            from collections import Counter
+            emotions = [p["emotion"] for p in progression if p.get("emotion")]
+            if emotions:
+                mostCommon = Counter(emotions).most_common(1)
+                conversation.dominant_emotion = mostCommon[0][0]
+                
+            # 4. Auto-generate Title (if needed)
+            # Logic: If conversation is "New Chat" and this is the first turn
+            user_message_count = sum(1 for msg in contextMessages if msg.role == "user")
+            if user_message_count == 0 and conversationTitle == "New Chat":
+                title = requestMessage[:50].strip()
+                if len(requestMessage) > 50:
+                    title += "..."
+                conversation.title = title
+                logger.info(f"📝 Auto-generated title (Background): {title}")
+
+            # Commit main chat data
+            await self.db.commit()
+            
+            # 5. Save Semantic Memory (Phase 4.5)
+            # Check criteria
+            shouldSaveMemory = (
+                len(contextMessages) >= 7 and
+                emotionData.get("emotion_state") not in ["neutral", "calm"] and
+                len(emotionData.get("detected_themes", [])) > 0
+            )
+            
+            if shouldSaveMemory:
+                try:
+                    memoryService = MemoryService(self.db)
+                    recentMessages = contextMessages[-5:] + [
+                        {"role": "user", "content": requestMessage},
+                        {"role": "assistant", "content": aiContent}
+                    ]
+                    
+                    await memoryService.saveConversationSummary(
+                        userId=userId,
+                        conversationId=conversationId,
+                        messages=[
+                            {"role": msg.role if hasattr(msg, 'role') else msg.get('role'),
+                             "content": msg.content if hasattr(msg, 'content') else msg.get('content')}
+                            for msg in recentMessages
+                        ],
+                        emotionState=emotionData["emotion_state"],
+                        themes=emotionData.get("detected_themes", [])
+                    )
+                    logger.info("💾 Saved to memory (Background)")
+                except Exception as e:
+                    logger.error(f"❌ Memory save failed (Background): {e}")
+
+        except Exception as e:
+            logger.error(f"❌ Background Save Failed: {e}")
+            # Note: Cannot re-raise effectively in background task, so we log error
 
     async def chat(self, userId: UUID, request: ChatRequest) -> ChatResponse:
         """

@@ -21,9 +21,11 @@ class Settings(BaseSettings):
     GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
     GOOGLE_CLOUD_PROJECT: Optional[str] = None
     
-    # OpenAI
+    # OpenAI & OpenRouter
     OPENROUTER_API_KEY: str
-    OPENROUTER_MODEL: str = "openai/gpt-4o-mini"
+    OPENROUTER_MODEL: str = "google/gemini-2.5-flash-lite"  # Legacy/default
+    OPENROUTER_CHAT_MODEL: str = "google/gemini-2.5-flash-lite"  # Main chat
+    OPENROUTER_TITLE_MODEL: str = "google/gemini-2.5-flash-lite"  # Title generation
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     
     # Voice Settings (using Google Cloud STT)
