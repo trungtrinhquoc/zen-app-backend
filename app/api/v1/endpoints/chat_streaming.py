@@ -15,7 +15,7 @@ from app.modules.conversation.suggestion_engine import (
     shouldSuggestActivity,
     getSuggestedActivity,
     generateSuggestionMessage,
-    ConversationContext  # NEW: For smart suggestions
+    ConversationContext 
 )
 from app.services.openrouter_client import openRouterService
 from app.modules.conversation.prompts import getSystemPrompt, formatMessagesForAI
