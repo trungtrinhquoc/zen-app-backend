@@ -59,43 +59,31 @@ YES_NO_RESPONSES = [
 
 def isSimplePattern(message: str) -> bool:
     """
-    Check if message matches any simple pattern
-    
-    Args:
-        message: User message
-    
-    Returns:
-        True if matches simple pattern
+    Check if message matches simple pattern
+    ONLY for very short exact matches (≤ 2 words)
+    Longer/complex messages still go through AI
     """
-    return False
+    message_lower = message.lower().strip()
     
-    # DISABLE SOFT MATCHING - FORCE AI
-    # message_lower = message.lower().strip()
-    # 
-    # # Short message check (max 30 chars for fast path)
-    # if len(message_lower) > 30:
-    #     return False
-    # 
-    # # Check all pattern types
-    # all_patterns = [
-    #     GREETING_PATTERNS,
-    #     THANKS_PATTERNS,
-    #     BYE_PATTERNS,
-    #     YES_NO_PATTERNS
-    # ]
-    # 
-    # for patterns in all_patterns:
-    #     for pattern in patterns:
-    #         if re.search(pattern, message_lower, re.IGNORECASE):
-    #             # Ensure it's simple (max 4 words)
-    #             words = message_lower.split()
-    #             if len(words) <= 4:
-    #                 return True
-    # 
-    # return False
-
-
-# Backward compatibility
+    # Only fast-path for VERY short messages (max 2 words, max 15 chars)
+    words = message_lower.split()
+    if len(words) > 2 or len(message_lower) > 15:
+        return False
+    
+    # Check exact patterns only
+    all_patterns = [
+        GREETING_PATTERNS,
+        THANKS_PATTERNS,
+        BYE_PATTERNS,
+        YES_NO_PATTERNS
+    ]
+    
+    for patterns in all_patterns:
+        for pattern in patterns:
+            if re.search(pattern, message_lower, re.IGNORECASE):
+                return True
+    
+    return False
 def isSimpleGreeting(message: str) -> bool:
     """Alias for isSimplePattern"""
     return isSimplePattern(message)

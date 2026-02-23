@@ -27,6 +27,7 @@ from app.modules.conversation.simple_responder import (
 )
 
 from app.modules.conversation.prompts import buildCombinedPrompt
+from app.modules.memory.service import MemoryService
 import json
 
 # ============================================================
@@ -82,6 +83,13 @@ class ConversationService:
         # Cache miss or expired - query DB
         #logger.info(f"💾 User cache MISS - querying DB")
 
+        stmt = select(User).where(User.id == userId)
+        result = await self.db.execute(stmt)
+        user = result.scalar_one_or_none()
+        if user:
+            _USER_CACHE[cache_key] = (user, datetime.utcnow())
+            return user
+            
         from sqlalchemy.dialects.postgresql import insert
     
         stmt = insert(User).values(
@@ -511,12 +519,14 @@ class ConversationService:
                 conversation.dominant_emotion = mostCommon[0][0]
                 
             # 4. Auto-generate Title (if needed)
-            # Logic: If conversation is "New Chat" and this is the first turn
-            user_message_count = sum(1 for msg in contextMessages if msg.role == "user")
-            if user_message_count == 0 and conversationTitle == "New Chat":
+            # Logic: If conversation is "New Chat", attempt to generate title
+            # (Relaxed condition: allow title gen even if not first msg, in case it failed before)
+            if conversation.title == "New Chat":
                 title = requestMessage[:50].strip()
                 if len(requestMessage) > 50:
                     title += "..."
+                
+                # Update title
                 conversation.title = title
                 logger.info(f"📝 Auto-generated title (Background): {title}")
 

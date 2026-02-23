@@ -22,6 +22,7 @@ from app.modules.conversation.prompts import getSystemPrompt, formatMessagesForA
 from app.utils.logger import logger
 from app.models import Conversation
 from app.modules.memory.service import MemoryService
+from app.core.config import settings
 from datetime import datetime
 
 router = APIRouter()
@@ -31,6 +32,7 @@ def format_sse(event: str, data: dict) -> str:
     json_str = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {json_str}\n\n"
 
+
 async def streamChatResponse(
     userId: UUID,
     request: ChatRequest,
@@ -38,223 +40,159 @@ async def streamChatResponse(
     background_tasks: BackgroundTasks
 ):
     """
-    Stream chat response chunk by chunk
+    Stream chat response - OPTIMIZED: Fire AI immediately, don't wait for DB
     
-    Yields SSE events:
-    - event: chunk, data: {"content": "..."}
-    - event: metadata, data: {"emotion": "...", "conversationId": "..."}
-    - event: done, data: {}
+    NEW FLOW:
+    0ms:   Emotion analysis (rule-based, instant)
+    0ms:   Fire DB tasks + AI streaming IN PARALLEL
+    ~500ms: AI first token arrives → yield to user immediately
+    ~1000ms: DB tasks complete (needed for background save later)
     """
     
     try:
         service = ConversationService(db)
         
         # ============================================================
-        # PHASE 1: Setup (user, conversation, context)
+        # STEP 0: Instant checks (< 1ms)
         # ============================================================
         
-        logger.info("🔄 PHASE 1 (Streaming): Setup...")
-        phase1_start = time.time()
-        
-        # 1. Prepare tasks
-        task_user = service.getOrCreateUser(userId)
-        
-        # Variables to hold results
-        conversation = None
-        contextMessages = []
-        
-        # Logic: If client sends conversationId, we can fetch context in parallel
-        if request.conversationId:
-            task_conv = service.getOrCreateConversation(userId, conversationId=request.conversationId)
-            task_context = service.getConversationContext(request.conversationId)
-            
-            # Run 3 tasks concurrently
-            results = await asyncio.gather(task_user, task_conv, task_context, return_exceptions=True)
-            
-            # Handle User result
-            if isinstance(results[0], Exception): raise results[0]
-            user = results[0]
-            
-            # Handle Conversation result
-            if isinstance(results[1], Exception): raise results[1]
-            conversation = results[1]
-            
-            # Handle Context result (log warning on error, default to empty)
-            if isinstance(results[2], Exception):
-                logger.warning(f"⚠️ Context load error: {results[2]}")
-                contextMessages = []
-            else:
-                contextMessages = results[2]
-                
-        else:
-            # New Chat Case (no ID): Sequential flow required
-            # 1. Get User
-            user = await task_user
-            # 2. Create Conversation
-            conversation = await service.getOrCreateConversation(userId, None)
-            # 3. Context is empty for new chat
-            contextMessages = []
-
-        contextUsed = len(contextMessages)
-        phase1_elapsed = (time.time() - phase1_start) * 1000
-        logger.info(f"✅ Phase 1 Complete: {phase1_elapsed:.0f}ms (Parallel) - used {contextUsed} msgs")
-        
-        # ============================================================
-        # FAST PATH: Simple patterns
-        # ============================================================
-        
+        # Fast path check BEFORE any async work
         if isSimplePattern(request.message):
-            #logger.info("⚡ FAST PATH (Streaming): Simple pattern")
-            
-            aiContent, metadata = getSimpleResponse(request.message)
-            emotionData = {
-                "emotion_state": "neutral",
-                "energy_level": 5,
-                "urgency_level": "low",
-                "detected_themes": ["general"],
-                "method": "rule_based"
-            }
-            
-            # Stream the response (simulate streaming for simple responses)
-            words = aiContent.split()
-            for i, word in enumerate(words):
-                chunk = word + (" " if i < len(words) - 1 else "")
-                yield format_sse("chunk", {"content": chunk})
-                await asyncio.sleep(0.05)  
-            # Save to database
-            seqNum = len(contextMessages) + 1
-            
-            # Save user message
-            await service.saveMessage(
-                conversationId=conversation.id,
-                userId=userId,
-                role="user",
-                content=request.message,
-                sequenceNumber=seqNum,
-                emotionData=emotionData,
-                metadata={
-                    "is_voice_input": request.isVoiceInput,
-                    "voice_duration": request.voiceDuration,
-                    "content_type": "voice" if request.isVoiceInput else "text"
-                }
-            )
-            
-            # Save assistant message
-            await service.saveMessage(
-                conversationId=conversation.id,
-                userId=userId,
-                role="assistant",
-                content=aiContent,
-                sequenceNumber=seqNum + 1,
-                metadata=metadata
-            )
-            
-            # Update emotion progression
-            await service.updateEmotionProgression(
-                conversationId=conversation.id,
-                emotionState=emotionData['emotion_state'],
-                energyLevel=emotionData['energy_level']
-            )
-            
-            # Check suggestion
-            suggestion = None
-            if shouldSuggestActivity(emotionData, request.message):
-                activity = getSuggestedActivity(emotionData)
-                if activity:
-                    suggestion = activity
-                    suggestionMsg = generateSuggestionMessage(activity)
-                    aiContent += f"\n\n{suggestionMsg}"
-                    logger.info(f"💡 Suggested: {activity['activity_type']}")
-            
-            # Commit transaction
-            await service.db.commit()
-            
-            # Send complete metadata matching ChatResponse schema
-            from datetime import datetime
-            metadata_response = {
-                "conversationId": str(conversation.id),
-                "userMessage": {
-                    "id": str(uuid4()), 
-                    "role": "user",
-                    "content": request.message,
-                    "contentType": "text",
-                    "sequenceNumber": seqNum,
-                    "createdAt": datetime.utcnow().isoformat() + "Z",
-                    "emotionState": emotionData['emotion_state'],
-                    "energyLevel": emotionData['energy_level'],
-                    "urgencyLevel": emotionData['urgency_level'],
-                    "detectedThemes": emotionData['detected_themes']
-                },
-                "assistantMessage": {
-                    "id": str(uuid4()), 
-                    "role": "assistant",
-                    "content": aiContent,
-                    "contentType": "text",
-                    "sequenceNumber": seqNum + 1,
-                    "createdAt": datetime.utcnow().isoformat() + "Z",
-                    "modelUsed": metadata.get('model')
-                },
-                "contextUsed": contextUsed,
-                "suggestion": suggestion
-            }
-            yield format_sse("metadata", metadata_response)
-            yield format_sse("done", {})
+            # Handle simple patterns - need DB for save though
+            async for _ in _handleSimplePath(service, userId, request, db):
+                yield _
             return
         
-        # ============================================================
-        # PHASE 2: Emotion Analysis (rule-based)
-        # ============================================================
-        
-        logger.info("🔄 PHASE 2 (Streaming): Emotion analysis...")
-        
+        # Rule-based emotion
         emotionData = await analyzeEmotionSimple(request.message)
         emotionState = emotionData.get("emotion_state", "neutral")
         
         # ============================================================
-        # PHASE 2.5 + 3: PARALLEL Memory Search + AI Response (OPTIMIZED)
+        # STEP 1: BUILD AI REQUEST IMMEDIATELY 
         # ============================================================
         
-        logger.info("🔄 PHASE 3 (Streaming): AI response + Memory search (parallel)...")
-        
-        # Prepare system prompt
         systemPrompt = getSystemPrompt(
-            userContext={"language": user.language},
+            userContext={"language": "vi"}, 
             emotionState=emotionState
         )
         
-        messages = formatMessagesForAI(contextMessages, systemPrompt)
-        messages.append({
-            "role": "user",
-            "content": request.message
-        })
+        messages_for_ai = [
+            {"role": "system", "content": systemPrompt},
+            {"role": "user", "content": request.message}
+        ]
         
-        # ⚡ PARALLEL: Start memory search in background (don't await)
-        # NOTE: Memory search is now part of saveChatTurn (Phase 4.5) which runs in background.
+        # ============================================================
+        # STEP 2: PARALLEL — Fire AI + DB simultaneously
+        # ============================================================
         
-        # ⚡ PARALLEL: Stream AI response immediately (don't wait for memory)
-        from app.core.config import settings
+        logger.info("🔄 PARALLEL: Starting AI stream + DB setup simultaneously...")
+        parallel_start = time.time()
+        
+        db_ready = asyncio.Event()
+        db_results = {}  
+        
+        async def _db_setup():
+            """Run all DB setup in background"""
+            try:
+                phase1_start = time.time()
+                
+                task_user = service.getOrCreateUser(userId)
+                
+                if request.conversationId:
+                    task_conv = service.getOrCreateConversation(userId, conversationId=request.conversationId)
+                    task_context = service.getConversationContext(request.conversationId, limit=10)  # Reduced from 20
+                    
+                    results = await asyncio.gather(task_user, task_conv, task_context, return_exceptions=True)
+                    
+                    if isinstance(results[0], Exception): raise results[0]
+                    db_results["user"] = results[0]
+                    
+                    if isinstance(results[1], Exception): raise results[1]
+                    db_results["conversation"] = results[1]
+                    
+                    if isinstance(results[2], Exception):
+                        logger.warning(f"⚠️ Context load error: {results[2]}")
+                        db_results["contextMessages"] = []
+                    else:
+                        db_results["contextMessages"] = results[2]
+                else:
+                    user = await task_user
+                    db_results["user"] = user
+                    conversation = await service.getOrCreateConversation(userId, None)
+                    db_results["conversation"] = conversation
+                    db_results["contextMessages"] = []
+                
+                phase1_elapsed = (time.time() - phase1_start) * 1000
+                logger.info(f"✅ DB Setup Complete: {phase1_elapsed:.0f}ms")
+                
+            except Exception as e:
+                db_results["error"] = e
+                logger.error(f"❌ DB setup error: {e}")
+            finally:
+                db_ready.set()
+        
+        db_task = asyncio.create_task(_db_setup())
+        
+        # ============================================================
+        # STEP 3: STREAM AI RESPONSE IMMEDIATELY
+        # ============================================================
+        contextMessages_for_ai = []
+        if request.conversationId:
+            pass
+        
+        ttft_logged = False
+        stream_start = time.time()
         full_content = ""
+        chunk_count = 0
+        
+        chunk_count = 0
+        
         async for chunk in openRouterService.chatStreaming(
-            messages=messages,
+            messages=messages_for_ai,
             temperature=0.8,
-            maxTokens=800,
-            model=settings.OPENROUTER_CHAT_MODEL  # 🚀 Use fast chat model
+            maxTokens=500,
+            model=settings.OPENROUTER_CHAT_MODEL
         ):
+            if not ttft_logged:
+                ttft = (time.time() - stream_start) * 1000
+                total_ttfc = (time.time() - parallel_start) * 1000
+                logger.info(f"⚡ AI TTFT: {ttft:.0f}ms | Total TTFC: {total_ttfc:.0f}ms")
+                ttft_logged = True
+            
             full_content += chunk
+            chunk_count += 1
             yield format_sse("chunk", {"content": chunk})
         
+        stream_elapsed = (time.time() - stream_start) * 1000
+        
         # ============================================================
-        # PHASE 4: Background Save
+        # STEP 4: WAIT FOR DB (should already be done by now)
         # ============================================================
         
-        logger.info("🔄 PHASE 4 (Streaming): Scheduling background save...")
+        if not db_ready.is_set():
+            logger.info("⏳ Waiting for DB setup to complete...")
+            await asyncio.wait_for(db_ready.wait(), timeout=10.0)
         
-        # Prepare metadata
+        # Check for DB errors
+        if "error" in db_results:
+            raise db_results["error"]
+        
+        user = db_results["user"]
+        conversation = db_results["conversation"]
+        contextMessages = db_results.get("contextMessages", [])
+        contextUsed = len(contextMessages)
+        
+        # ============================================================
+        # STEP 5: SUGGESTION + BACKGROUND SAVE 
+        # ============================================================
+        
+        logger.info("🔄 Scheduling background save...")
+        
         metadata = {
             "model": settings.OPENROUTER_CHAT_MODEL,
             "promptTokens": 0,
             "completionTokens": 0,
-            "responseTimeMs": 0
+            "responseTimeMs": int(stream_elapsed)
         }
         
         seqNum = len(contextMessages) + 1
@@ -271,7 +209,6 @@ async def streamChatResponse(
             last_assistant_message=lastAssistantMsg
         )
         
-        # Rebuild context state
         for msg in contextMessages:
             if msg.role == "assistant" and msg.metadata:
                 if isinstance(msg.metadata, dict) and msg.metadata.get("suggestion"):
@@ -286,13 +223,13 @@ async def streamChatResponse(
             request.message,
             conversationTurnCount=seqNum,
             lastAssistantMessage=lastAssistantMsg,
-            context=context  
+            context=context
         ):
             activity = getSuggestedActivity(
                 emotionData, 
                 userMessage=request.message,
                 userLanguage=user.language or "vi",
-                context=context  
+                context=context
             )
             if activity:
                 suggestion = activity
@@ -301,7 +238,6 @@ async def streamChatResponse(
                 logger.info(f"💡 Suggested: {activity['activity_type']}")
         
         # Schedule Background Task
-        # IMPORTANT: We pass copies of data or primitive types to avoid DetachedInstanceError
         background_tasks.add_task(
             service.saveChatTurn,
             conversationId=conversation.id,
@@ -319,7 +255,6 @@ async def streamChatResponse(
         logger.info("✅ Background save scheduled.")
 
         # Send metadata
-        from datetime import datetime
         metadata_response = {
             "conversationId": str(conversation.id),
             "userMessage": {
@@ -358,30 +293,69 @@ async def streamChatResponse(
         yield format_sse("done", {})
 
 
+async def _handleSimplePath(service, userId, request, db):
+    """Handle simple pattern messages with fast response"""
+    phase1_start = time.time()
+    
+    # Still need DB for saving
+    user = await service.getOrCreateUser(userId)
+    conversation = await service.getOrCreateConversation(userId, request.conversationId)
+    contextMessages = []
+    if request.conversationId:
+        contextMessages = await service.getConversationContext(request.conversationId, limit=10)
+    
+    aiContent, metadata = getSimpleResponse(request.message)
+    emotionData = {
+        "emotion_state": "neutral",
+        "energy_level": 5,
+        "urgency_level": "low",
+        "detected_themes": ["general"],
+        "method": "rule_based"
+    }
+    
+    # Stream immediately (no simulated delay for simple responses — instant!)
+    yield format_sse("chunk", {"content": aiContent})
+    
+    seqNum = len(contextMessages) + 1
+    
+    # Save in background-ish (after yield)
+    await service.saveMessage(
+        conversationId=conversation.id, userId=userId, role="user",
+        content=request.message, sequenceNumber=seqNum,
+        emotionData=emotionData,
+        metadata={"is_voice_input": request.isVoiceInput, "voice_duration": request.voiceDuration, "content_type": "voice" if request.isVoiceInput else "text"}
+    )
+    await service.saveMessage(
+        conversationId=conversation.id, userId=userId, role="assistant",
+        content=aiContent, sequenceNumber=seqNum + 1, metadata=metadata
+    )
+    await service.updateEmotionProgression(
+        conversationId=conversation.id, emotionState=emotionData['emotion_state'], energyLevel=emotionData['energy_level']
+    )
+    await service.db.commit()
+    
+    metadata_response = {
+        "conversationId": str(conversation.id),
+        "userMessage": {"id": str(uuid4()), "role": "user", "content": request.message, "contentType": "text", "sequenceNumber": seqNum, "createdAt": datetime.utcnow().isoformat() + "Z", "emotionState": emotionData['emotion_state'], "energyLevel": emotionData['energy_level'], "urgencyLevel": emotionData['urgency_level'], "detectedThemes": emotionData['detected_themes']},
+        "assistantMessage": {"id": str(uuid4()), "role": "assistant", "content": aiContent, "contentType": "text", "sequenceNumber": seqNum + 1, "createdAt": datetime.utcnow().isoformat() + "Z", "modelUsed": metadata.get('model')},
+        "contextUsed": len(contextMessages),
+        "suggestion": None
+    }
+    yield format_sse("metadata", metadata_response)
+    yield format_sse("done", {})
+
+
 @router.post("/stream")
 async def chatStream(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(getDbSession)
 ):
-    """
-    Stream chat response in real-time
-    
-    Returns:
-        StreamingResponse with Server-Sent Events
-    
-    Events:
-        - chunk: Text chunks as they arrive
-        - metadata: Emotion and conversation info
-        - done: Streaming complete
-        - error: Error occurred
-    """
-    
-    logger.info("================================================================================")
+    logger.info("=" * 80)
     logger.info("🚀 STREAMING CHAT REQUEST STARTED")
     logger.info(f"📍 User ID: {request.userId}")
     logger.info(f"💬 Message: {request.message}")
-    logger.info("================================================================================")
+    logger.info("=" * 80)
     
     return StreamingResponse(
         streamChatResponse(request.userId, request, db, background_tasks),
@@ -389,6 +363,6 @@ async def chatStream(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable nginx buffering
+            "X-Accel-Buffering": "no"
         }
     )
