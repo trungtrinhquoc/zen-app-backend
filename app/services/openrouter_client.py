@@ -30,10 +30,10 @@ class OpenRouterService:
                 api_key=self.api_key,
                 base_url="https://openrouter.ai/api/v1",
                 timeout=httpx.Timeout(
-                    connect=5.0,     # 5s to connect
+                    connect=3.0,     # 3s to connect (reduced from 5s)
                     read=30.0,       # 30s to read (streaming)
                     write=10.0,      # 10s to write
-                    pool=5.0         # 5s to get connection from pool
+                    pool=3.0         # 3s to get connection from pool
                 ),
                 max_retries=1,       # 1 retry on transient errors
                 http_client=httpx.AsyncClient(
@@ -123,7 +123,11 @@ class OpenRouterService:
                 messages=messages,
                 temperature=temperature,
                 max_tokens=maxTokens,
-                stream=True
+                stream=True,
+                extra_headers={
+                    "HTTP-Referer": "https://zenapp.com",
+                    "X-Title": "Zen APP"
+                }
             )
 
             chunk_count = 0
