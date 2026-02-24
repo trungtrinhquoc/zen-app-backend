@@ -231,7 +231,7 @@ ACTIVITIES = {
         icon="🌸",
         visual_style="gradient-purple-pink",
         action_text="Continue →",
-        card_title="🌸 Healing Routine",
+        card_title="🌸 Lộ Trình Chữa Lành",
         route_path="/activity/routine",
         
         provides_calming=0.7,
@@ -244,7 +244,7 @@ ACTIVITIES = {
         requires_talking=False,
         energy_required="medium",
         base_priority=5,
-        good_for_emotions=["calm", "happy"]
+        good_for_emotions=["calm", "happy", "hopeful", "neutral", "anxious", "stressed"]
     ),
     
     "journaling": ActivityProfile(
@@ -255,9 +255,9 @@ ACTIVITIES = {
         description="Write down what's on your mind.",
         description_vi="Viết ra những gì bạn đang nghĩ.",
         icon="📝",
-        visual_style="gradient-warm-orange",
+        visual_style="gradient-purple-blue",  # was gradient-warm-orange (does not exist)
         action_text="Start writing →",
-        card_title="📝 Journaling",
+        card_title="📝 Viết Nhật Ký",
         route_path="/activity/journaling",
         
         provides_calming=0.6,
@@ -609,9 +609,9 @@ def shouldSuggestActivity(
     3. Or when user explicitly asks
     """
     
-    # Rule 1: Too early
-    if conversationTurnCount <= 1:
-        logger.info("ℹ️  Too early - no suggestion yet")
+    # Rule 1: Too early (need at least 2 turns of context)
+    if conversationTurnCount <= 2:
+        logger.info(f"ℹ️  Too early - no suggestion yet (turn {conversationTurnCount})")
         return False
     
     msg_lower = messageContent.lower()

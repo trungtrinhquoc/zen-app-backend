@@ -2,7 +2,7 @@
 API v1 Main Router
 """
 from fastapi import APIRouter
-from app.api.v1.endpoints import health, chat, chat_streaming, conversations, voice
+from app.api.v1.endpoints import health, chat, chat_streaming, conversations, voice, routines
 
 apiRouter = APIRouter()
 
@@ -37,4 +37,15 @@ apiRouter.include_router(
     voice.router,
     prefix="/voice",
     tags=["Voice"]
+)
+
+# Include routine endpoints (Module 5)
+# This serves:
+#   /routines/generate, /routines/active, /routines/history
+#   /routines/{id}/complete-step, /routines/{id}/abandon
+#   /routines/activities  (activity library browser)
+apiRouter.include_router(
+    routines.router,
+    prefix="/routines",
+    tags=["Routines"]
 )
